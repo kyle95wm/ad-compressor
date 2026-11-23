@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.22)
 # matches the GitHub Release it ships in.
 set(AD_COMPRESSOR_VERSION "0.1.0" CACHE STRING "Plugin version (major.minor.patch)")
 
+# Must be set before project() to take effect.
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS version")
 endif()
@@ -21,9 +22,11 @@ option(AD_COMPRESSOR_BUILD_SCREENSHOT_TOOL "Build a tool that renders the UI to 
 option(AD_COMPRESSOR_COPY_AFTER_BUILD "Install the plugins into your user plug-in folders after building" OFF)
 
 set(AD_COMPRESSOR_GITHUB_REPO "kyle95wm/ad-compressor")
+set(AD_COMPRESSOR_ACCENT      "0xffffb238")   # amber; the plugin's one accent colour (ARGB)
 
 # ---------------------------------------------------------------------------
 # JUCE: use a local checkout if one is given, otherwise fetch a pinned release.
+# Keep the tag identical across all kyle95wm plugins (see CONVENTIONS.md).
 # ---------------------------------------------------------------------------
 set(AD_COMPRESSOR_JUCE_PATH "" CACHE PATH "Path to an existing JUCE checkout (optional)")
 
@@ -49,14 +52,14 @@ endif()
 
 juce_add_plugin(ADCompressor
     PRODUCT_NAME             "ADCompressor"
-    COMPANY_NAME             "kyle95wm"
+    COMPANY_NAME             "kyle95wm"          # shared: groups every plugin in one Logic menu
     COMPANY_WEBSITE          "https://github.com/kyle95wm/ad-compressor"
     BUNDLE_ID                "com.kyle95wm.adcompressor"
-    PLUGIN_MANUFACTURER_CODE Ky95
+    PLUGIN_MANUFACTURER_CODE Ky95                # shared by every kyle95wm plugin
     PLUGIN_CODE              Adcp
     FORMATS                  ${AD_COMPRESSOR_FORMATS}
     IS_SYNTH                 FALSE
-    NEEDS_CURL               TRUE
+    NEEDS_CURL               TRUE                # update checker on Linux
     NEEDS_MIDI_INPUT         FALSE
     NEEDS_MIDI_OUTPUT        FALSE
     IS_MIDI_EFFECT           FALSE
@@ -75,11 +78,16 @@ set(AD_COMPRESSOR_PLUGIN_SOURCES
 target_sources(ADCompressor PRIVATE ${AD_COMPRESSOR_PLUGIN_SOURCES})
 target_include_directories(ADCompressor PRIVATE Source)
 
+# Read by the shared files (UpdateChecker, BrandLookAndFeel), which stay
+# byte-identical across plugins.
+set(AD_COMPRESSOR_SHARED_DEFINITIONS
+    PLUGIN_GITHUB_REPO="${AD_COMPRESSOR_GITHUB_REPO}"
+    BRAND_ACCENT_ARGB=${AD_COMPRESSOR_ACCENT})
+
 target_compile_definitions(ADCompressor PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0
-    AD_COMPRESSOR_GITHUB_REPO="${AD_COMPRESSOR_GITHUB_REPO}")
+    ${AD_COMPRESSOR_SHARED_DEFINITIONS})
 
 target_link_libraries(ADCompressor
     PRIVATE
@@ -98,7 +106,7 @@ set(AD_COMPRESSOR_TOOL_DEFINITIONS
     JucePlugin_Name="ADCompressor"
     JucePlugin_VersionString="${PROJECT_VERSION}"
     JucePlugin_Build_Standalone=0
-    AD_COMPRESSOR_GITHUB_REPO="${AD_COMPRESSOR_GITHUB_REPO}")
+    ${AD_COMPRESSOR_SHARED_DEFINITIONS})
 
 # ---------------------------------------------------------------------------
 # Headless tests: ctest --test-dir build -C Release
