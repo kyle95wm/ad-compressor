@@ -1,4 +1,4 @@
-# AD Compressor installer for Windows.
+# ADCompressor installer for Windows.
 #
 # Run from an extracted release zip (right-click > Run with PowerShell), or install
 # the latest release in one go from an *Administrator* PowerShell:
@@ -9,7 +9,7 @@
 
 $ErrorActionPreference = 'Stop'
 $Repo = 'kyle95wm/ad-compressor'
-$Name = 'AD Compressor'
+$Name = 'ADCompressor'
 $Dest = Join-Path $env:CommonProgramFiles 'VST3'
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(

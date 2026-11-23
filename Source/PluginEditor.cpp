@@ -63,11 +63,16 @@ void KnobLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
 {
     const auto r = b.getLocalBounds().toFloat().reduced (1.0f);
     const bool on = b.getToggleState();
-    g.setColour (on ? accent : (highlighted ? track.brighter (0.15f) : track));
+    const auto& props = b.getProperties();
+    const auto onColour = props.contains ("onColour") ? juce::Colour ((juce::uint32) (juce::int64) props["onColour"]) : accent;
+    const auto onText  = props.getWithDefault ("onText", "BYPASSED").toString();
+    const auto offText = props.getWithDefault ("offText", "ACTIVE").toString();
+
+    g.setColour (on ? onColour : (highlighted ? track.brighter (0.15f) : track));
     g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
     g.setColour (on ? bg : textMain);
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (on ? "BYPASSED" : "ACTIVE", r, juce::Justification::centred);
+    g.drawText (on ? onText : offText, r, juce::Justification::centred);
 }
 
 // =============================================================================
@@ -88,6 +93,17 @@ ADCompressorEditor::ADCompressorEditor (ADCompressorProcessor& p)
     bypassButton.setLookAndFeel (&lnf);
     bypassButton.setTooltip ("Level-matched A/B: output loudness tracks the input, so bypassing compares tone, not volume.");
     addAndMakeVisible (bypassButton);
+
+    // Ceiling switch: -1 dBFS (off) / -6 dBFS (on), drawn as the same pill as Bypass.
+    ceilingButton.setLookAndFeel (&lnf);
+    ceilingButton.getProperties().set ("offText", "CEILING -1 dBFS");
+    ceilingButton.getProperties().set ("onText", "CEILING -6 dBFS");
+    ceilingButton.getProperties().set ("onColour", (juce::int64) 0xff5ec8f2);
+    ceilingButton.setTooltip ("Limiter ceiling. -1 dBFS works at any recording level. -6 dBFS is for takes "
+                              "recorded with headroom; on hot takes it will audibly limit consonants.");
+    addAndMakeVisible (ceilingButton);
+    ceilingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        p.apvts, ADCompressorProcessor::ceilingId, ceilingButton);
 
     // --- Footer: version + update checker (same behaviour as VODucker) ------
     updateLabel.setFont (juce::FontOptions (12.0f));
@@ -125,6 +141,7 @@ ADCompressorEditor::~ADCompressorEditor()
 {
     knob.setLookAndFeel (nullptr);
     bypassButton.setLookAndFeel (nullptr);
+    ceilingButton.setLookAndFeel (nullptr);
 }
 
 void ADCompressorEditor::timerCallback()
@@ -179,7 +196,7 @@ void ADCompressorEditor::paint (juce::Graphics& g)
     g.setColour (textMain);
     g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
     auto titleRow = area.removeFromTop (28.0f);
-    g.drawText ("AD COMPRESSOR", titleRow, juce::Justification::centredLeft);
+    g.drawText ("ADCompressor", titleRow, juce::Justification::centredLeft);
     g.setColour (textDim);
     g.setFont (juce::FontOptions (12.0f));
     g.drawText ("v" + UpdateChecker::getCurrentVersion(), titleRow, juce::Justification::centredRight);
@@ -255,7 +272,11 @@ void ADCompressorEditor::resized()
     area.removeFromBottom (10);
 
     auto bottom = area.removeFromBottom (36);
-    bypassButton.setBounds (bottom.withSizeKeepingCentre (130, 30));
+    {
+        auto row = bottom.withSizeKeepingCentre (296, 30);
+        bypassButton.setBounds (row.removeFromLeft (130));
+        ceilingButton.setBounds (row.removeFromRight (150));
+    }
     area.removeFromBottom (14);
 
     meterArea = area.removeFromBottom (104).reduced (8).toFloat();

@@ -42,6 +42,7 @@ public:
 
     static constexpr const char* amountId = "amount";
     static constexpr const char* bypassId = "bypass";
+    static constexpr const char* ceilingId = "ceiling"; // 0 = -1 dBFS, 1 = -6 dBFS
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -49,6 +50,7 @@ private:
     ad::VoiceChain chain;
     std::atomic<float>* amountParam = nullptr;
     juce::AudioParameterBool* bypassParam = nullptr;
+    juce::AudioParameterChoice* ceilingParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADCompressorProcessor)
 };

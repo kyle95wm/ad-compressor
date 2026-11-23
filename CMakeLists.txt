@@ -48,7 +48,7 @@ if(AD_COMPRESSOR_BUILD_STANDALONE)
 endif()
 
 juce_add_plugin(ADCompressor
-    PRODUCT_NAME             "AD Compressor"
+    PRODUCT_NAME             "ADCompressor"
     COMPANY_NAME             "kyle95wm"
     COMPANY_WEBSITE          "https://github.com/kyle95wm/ad-compressor"
     BUNDLE_ID                "com.kyle95wm.adcompressor"
@@ -95,7 +95,7 @@ target_link_libraries(ADCompressor
 set(AD_COMPRESSOR_TOOL_DEFINITIONS
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JucePlugin_Name="AD Compressor"
+    JucePlugin_Name="ADCompressor"
     JucePlugin_VersionString="${PROJECT_VERSION}"
     JucePlugin_Build_Standalone=0
     AD_COMPRESSOR_GITHUB_REPO="${AD_COMPRESSOR_GITHUB_REPO}")

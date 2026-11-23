@@ -1,4 +1,4 @@
-// Headless tests for AD Compressor (run by ctest on every platform in CI).
+// Headless tests for ADCompressor (run by ctest on every platform in CI).
 // Drives the plugin's processor directly (no plugin host needed) with
 // synthetic voice-like material and checks: loudness match (BS.1770-style
 // gated), the -1 dBFS output ceiling, dynamic spread reduction, bit-exact
@@ -284,6 +284,22 @@ int main (int argc, char* argv[])
                         maxErr = std::max (maxErr, std::abs (out.getSample (ch, i) - input.getSample (ch, i - lat)));
                 check (maxErr < 1.0e-6f, "bypass is latency-aligned passthrough (max err "
                                          + juce::String (maxErr, 9) + ")");
+            }
+        }
+
+        // Ceiling switch at -6 dBFS: no output sample may exceed it.
+        {
+            auto inst = load (cfg.sr, cfg.block, cfg.nCh);
+            findParam (*inst, "Amount")->setValueNotifyingHost (1.0f);
+            auto* ceiling = findParam (*inst, "Ceiling");
+            check (ceiling != nullptr, "plugin exposes a Ceiling parameter");
+            if (ceiling != nullptr)
+            {
+                ceiling->setValueNotifyingHost (1.0f); // -6 dBFS
+                const auto out = run (*inst, input, cfg.block);
+                const float pk = peakDb (out, 0);
+                std::cout << "  ceiling -6 dBFS @100%: peak " << juce::String (pk, 2) << " dBFS\n";
+                check (pk <= -5.99f, "output peak <= -6 dBFS with the -6 ceiling selected");
             }
         }
 

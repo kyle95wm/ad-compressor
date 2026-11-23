@@ -9,7 +9,8 @@ ADCompressorProcessor::ADCompressorProcessor()
 {
     amountParam = apvts.getRawParameterValue (amountId);
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (bypassId));
-    jassert (amountParam != nullptr && bypassParam != nullptr);
+    ceilingParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ceilingId));
+    jassert (amountParam != nullptr && bypassParam != nullptr && ceilingParam != nullptr);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ADCompressorProcessor::createLayout()
@@ -25,6 +26,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout ADCompressorProcessor::creat
 
     layout.add (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { bypassId, 1 }, "Bypass", false));
+
+    // Output ceiling. -1 dBFS suits any recording level; -6 dBFS suits takes
+    // recorded with headroom (on hot takes it limits consonants audibly).
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { ceilingId, 1 }, "Ceiling", juce::StringArray { "-1 dBFS", "-6 dBFS" }, 0));
 
     return layout;
 }
@@ -50,7 +56,8 @@ void ADCompressorProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    chain.process (buffer, amountParam->load() / 100.0f, bypassParam->get());
+    chain.process (buffer, amountParam->load() / 100.0f, bypassParam->get(),
+                   ceilingParam->getIndex() == 1 ? -6.0f : -1.0f);
 }
 
 void ADCompressorProcessor::getStateInformation (juce::MemoryBlock& destData)

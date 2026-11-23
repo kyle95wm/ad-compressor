@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AD Compressor installer for macOS and Linux.
+# ADCompressor installer for macOS and Linux.
 #
 # Run it from an extracted release zip:      ./install.sh
 # Or install the latest release in one go:   curl -fsSL https://raw.githubusercontent.com/kyle95wm/ad-compressor/main/scripts/install.sh | bash
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 REPO="kyle95wm/ad-compressor"
-NAME="AD Compressor"
+NAME="ADCompressor"
 OS="$(uname -s)"
 
 case "$OS" in

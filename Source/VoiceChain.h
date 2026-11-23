@@ -7,7 +7,7 @@
 #include <vector>
 
 // =============================================================================
-// AD Compressor DSP
+// ADCompressor DSP
 //
 // Signal flow (all stages driven by a single 0..1 "amount" value):
 //
@@ -457,7 +457,7 @@ public:
 
         deEsser.prepare (sr, channels, maxBlock);
         limiter.prepare (sr, channels);
-        limiter.setCeilingDb (kCeilingDb);
+        limiter.setCeilingDb (kDefaultCeilingDb);
 
         for (int ch = 0; ch < kMaxChannels; ++ch)
         {
@@ -483,6 +483,7 @@ public:
         trimOut.prepare (sr, 10.0);
 
         amountSmoothed.reset (sr, 0.05);
+        ceilingSmoothed.reset (sr, 0.05);
         mix.reset (sr, 0.02);
         mix.setCurrentAndTargetValue (1.0f);
         firstBlock = true;
@@ -522,7 +523,9 @@ public:
         return { publishedInputLufs.load(), publishedTrimDb.load(), publishedValid.load() };
     }
 
-    void process (juce::AudioBuffer<float>& buffer, float amountTarget, bool bypassed) noexcept
+    // ceilingDb: limiter ceiling in dBFS (the plugin offers -1 or -6); changes glide over 50 ms.
+    void process (juce::AudioBuffer<float>& buffer, float amountTarget, bool bypassed,
+                  float ceilingDb = kDefaultCeilingDb) noexcept
     {
         const int n = buffer.getNumSamples();
         const int nCh = std::min (channels, buffer.getNumChannels());
@@ -535,11 +538,13 @@ public:
         if (firstBlock)
         {
             amountSmoothed.setCurrentAndTargetValue (amountTarget);
+            ceilingSmoothed.setCurrentAndTargetValue (ceilingDb);
             mix.setCurrentAndTargetValue (bypassed ? 0.0f : 1.0f);
             firstBlock = false;
         }
         amountSmoothed.setTargetValue (amountTarget);
         mix.setTargetValue (bypassed ? 0.0f : 1.0f);
+        ceilingSmoothed.setTargetValue (ceilingDb);
 
         auto* const* data = buffer.getArrayOfWritePointers();
         const int dryLen = (int) dryDelay[0].size();
@@ -551,6 +556,7 @@ public:
             const int len = std::min (kControlInterval, n - start);
             const float a = amountSmoothed.skip (len);
             updateParameters (a);
+            limiter.setCeilingDb (ceilingSmoothed.skip (len));
 
             for (int i = start; i < start + len; ++i)
             {
@@ -688,7 +694,9 @@ public:
     Meters meters;
 
 private:
-    static constexpr float kCeilingDb = -1.0f;
+public:
+    static constexpr float kDefaultCeilingDb = -1.0f;
+private:
     static constexpr float kGatePow = 1.0e-5f; // ≈ -50 dB K-weighted
     static constexpr float kReferenceLufs = -18.0f;
     static constexpr float kTrimStep = 0.1f / 8.0f;   // per 100 ms block → ~8 s
@@ -778,6 +786,7 @@ private:
     float lastPresenceDb = -1000.0f;
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> amountSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> ceilingSmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mix;
 };
 

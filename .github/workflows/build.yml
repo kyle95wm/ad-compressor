@@ -81,12 +81,12 @@ jobs:
           ART=build/ADCompressor_artefacts/Release
           OUT=dist/ADCompressor
           mkdir -p "$OUT"
-          cp -R "$ART/VST3/AD Compressor.vst3" "$OUT/"
+          cp -R "$ART/VST3/ADCompressor.vst3" "$OUT/"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            cp -R "$ART/AU/AD Compressor.component" "$OUT/"
+            cp -R "$ART/AU/ADCompressor.component" "$OUT/"
             # Ad-hoc sign so Apple Silicon hosts will load it (not notarised).
-            codesign --force --deep --sign - "$OUT/AD Compressor.vst3"
-            codesign --force --deep --sign - "$OUT/AD Compressor.component"
+            codesign --force --deep --sign - "$OUT/ADCompressor.vst3"
+            codesign --force --deep --sign - "$OUT/ADCompressor.component"
           fi
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp scripts/install.ps1 "$OUT/"
@@ -130,4 +130,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/*.zip scripts/install.sh scripts/install.ps1 \
-            --title "AD Compressor $GITHUB_REF_NAME" --generate-notes
+            --title "ADCompressor $GITHUB_REF_NAME" --generate-notes

@@ -33,6 +33,7 @@ private:
 
     juce::Slider knob;
     juce::ToggleButton bypassButton { "Bypass" };
+    juce::ToggleButton ceilingButton { "Ceiling" };
 
     juce::Label updateLabel;
     juce::TextButton updateButton { "Check for updates" };
@@ -41,6 +42,7 @@ private:
 
     juce::AudioProcessorValueTreeState::SliderAttachment knobAttachment;
     juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> ceilingAttachment;
 
     float compGr = 0, deEssGr = 0, limitGr = 0, makeup = 0;
     juce::Rectangle<float> meterArea;

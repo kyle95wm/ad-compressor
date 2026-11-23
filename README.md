@@ -1,10 +1,10 @@
-# AD Compressor
+# ADCompressor
 
 A **single-knob voice-over compressor** for a snappy, upfront, broadcast-style voice. It is available as a VST3 on all platforms, plus an AU on macOS.
 
-![AD Compressor plugin window](docs/screenshot.png)
+![ADCompressor plugin window](docs/screenshot.png)
 
-Turn one knob and AD Compressor runs your voice through three compression stages, a
+Turn one knob and ADCompressor runs your voice through three compression stages, a
 presence lift, a de-esser and a brickwall limiter, all scaled together. The output is
 **automatically loudness-matched to the input**, so turning the knob (or bypassing the plugin) changes the
 *sound*, not the volume. That makes A/B comparisons honest. You hear what the processing does,
@@ -17,9 +17,15 @@ voice is coming in and adapts, so you don't need to gain-stage into it.
 
 | Amount | What you get |
 |--------|--------------|
-| 0%     | Transparent (only the −1 dBFS safety limiter can act) |
+| 0%     | Transparent (only the safety limiter can act) |
 | 25–50% | Gentle leveling and a little extra snap and presence: a natural, polished voice |
 | 75–100% | Dense, forward, "radio" voice: tight level, punchy consonants, sibilance kept in check |
+
+**Ceiling** switches the output limiter between **−1 dBFS** (default) and **−6 dBFS**. Use −6 if
+your delivery spec asks for peaks at or below −6 and your takes are recorded with some headroom
+(peaks around −10 dBFS or lower), where it barely engages. On hot takes it will audibly squash
+consonants. Note that this is a sample-peak limiter: if your spec is in dBTP (true peak), keep a
+true-peak limiter on your final mix as well.
 
 Double-click the knob to return to 50%. **Bypass** (also linked to your DAW's bypass) crossfades
 over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The meters show gain reduction for
@@ -36,7 +42,7 @@ over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The met
 | Presence | High shelf at 4 kHz | 0 → +3.5 dB |
 | De-esser | Split-band at 6 kHz, follows the voice (relative to the full band), not a fixed threshold | 0 → up to 10 dB |
 | Makeup | Predicted makeup for the knob position (instant) plus a slow trim measured the way a LUFS meter does | 0 → ~11 dB |
-| Limiter | Brickwall at **−1 dBFS**, 1.5 ms lookahead, no overshoot | always on |
+| Limiter | Brickwall at **−1 dBFS** or **−6 dBFS** (Ceiling switch), 1.5 ms lookahead, no overshoot | always on |
 
 All stages are stereo-linked. Mono and stereo tracks are supported.
 
@@ -48,7 +54,7 @@ low-latency monitoring mode (Logic does this automatically).
 of speech. The learned values are saved with your session, so a reopened project is matched from
 the first syllable.
 
-**Tip:** EQ *before* AD Compressor. A high-pass at 70–100 Hz and a gentle cut wherever the
+**Tip:** EQ *before* ADCompressor. A high-pass at 70–100 Hz and a gentle cut wherever the
 voice sounds muddy (usually 200–400 Hz) keep low-end energy from driving the compressors. Leave the
 top end alone, because the plugin adds its own presence lift and de-esses.
 
@@ -60,9 +66,9 @@ the included installer, or copy the plugin yourself:
 
 | OS      | Installer             | Manual location |
 |---------|-----------------------|-----------------|
-| macOS   | `./install.sh`        | `AD Compressor.vst3` → `~/Library/Audio/Plug-Ins/VST3`, `AD Compressor.component` → `~/Library/Audio/Plug-Ins/Components` |
-| Windows | `install.ps1` (right-click → Run with PowerShell) | `AD Compressor.vst3` → `C:\Program Files\Common Files\VST3` |
-| Linux   | `./install.sh`        | `AD Compressor.vst3` → `~/.vst3` |
+| macOS   | `./install.sh`        | `ADCompressor.vst3` → `~/Library/Audio/Plug-Ins/VST3`, `ADCompressor.component` → `~/Library/Audio/Plug-Ins/Components` |
+| Windows | `install.ps1` (right-click → Run with PowerShell) | `ADCompressor.vst3` → `C:\Program Files\Common Files\VST3` |
+| Linux   | `./install.sh`        | `ADCompressor.vst3` → `~/.vst3` |
 
 One-line install of the latest release:
 
@@ -75,12 +81,12 @@ curl -fsSL https://raw.githubusercontent.com/kyle95wm/ad-compressor/main/scripts
 irm https://raw.githubusercontent.com/kyle95wm/ad-compressor/main/scripts/install.ps1 | iex
 ```
 
-**Logic Pro** only loads Audio Units, so use the AU (`install.sh` installs both). AD Compressor
+**Logic Pro** only loads Audio Units, so use the AU (`install.sh` installs both). ADCompressor
 appears under **Audio Units → kyle95wm**, next to VODucker.
 
 **macOS note:** the builds are ad-hoc signed but not notarised. `install.sh` removes the
 quarantine flag for you. If you copy the plugin by hand and macOS blocks it, run
-`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"AD Compressor.vst3"` (and the same for the `.component`).
+`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"ADCompressor.vst3"` (and the same for the `.component`).
 
 ## Updates
 

@@ -42,7 +42,7 @@ namespace
 class UpdateChecker::Impl : private juce::Thread
 {
 public:
-    Impl() : juce::Thread ("AD Compressor update check"), settings (settingsOptions())
+    Impl() : juce::Thread ("ADCompressor update check"), settings (settingsOptions())
     {
         // Show the last known result straight away (no network needed).
         const auto known = settings.getValue (kLatestKey);
