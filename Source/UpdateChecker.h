@@ -4,13 +4,13 @@
 #include <juce_data_structures/juce_data_structures.h>
 #include <juce_events/juce_events.h>
 
-// Checks GitHub Releases (repos/<AD_COMPRESSOR_GITHUB_REPO>/releases/latest) for a
+// Checks GitHub Releases (repos/<PLUGIN_GITHUB_REPO>/releases/latest) for a
 // newer version than the one this binary was built as.
 //
 // - One shared checker per process, so ten plugin instances = one request.
 // - Automatic checks run at most once every 24 hours and can be turned off;
 //   the setting and the last result are stored in the user's app-data folder
-//   (ADCompressor.settings), so it applies to every instance and every host.
+//   (<JucePlugin_Name>.settings), so it applies to every instance and every host.
 // - Never touches the network on the audio thread.
 class UpdateChecker
 {
