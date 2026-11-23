@@ -33,10 +33,12 @@
 //  * Predicted: because the compressors always see speech at the reference
 //    level, the makeup each knob position needs is known in advance (measured
 //    on real VO). Knob moves are compensated instantly, with nothing to learn.
-//  * Trim: a slow integrator comparing input loudness with the *final* output
-//    (after the limiter), both measured BS.1770-style (400 ms gated blocks,
-//    ~10 s memory), i.e. the way a LUFS meter would. It absorbs voice-to-voice
-//    differences.
+//  * Trim: compares input loudness with the *final* output (after the
+//    limiter, measured before the trim gain), both BS.1770-style (400 ms gated
+//    blocks, ~2 min memory), i.e. the way a LUFS meter would, and glides toward
+//    the gap. It absorbs voice-to-voice differences. The long memory matters:
+//    a short one follows scene-to-scene changes and re-expands them (LRA).
+
 //
 // The learned reference and trim are saved with the plugin state, so a
 // reopened session starts already calibrated.
@@ -359,7 +361,7 @@ public:
     void prepare (double sr, double memorySeconds = 3.0) noexcept
     {
         hopLen = std::max (1, (int) std::round (0.1 * sr));
-        avgCoef = (float) std::exp (-0.1 / memorySeconds); // memory, in blocks
+        memBlocks = (float) std::max (1.0, memorySeconds / 0.1); // memory, in 100 ms blocks
         reset();
     }
 
@@ -367,7 +369,7 @@ public:
     {
         std::fill (std::begin (sub), std::end (sub), 0.0);
         acc = 0; count = 0; subIdx = 0; filled = 0;
-        integratedPow = ungatedPow = 0; hasValue = hasUngated = false;
+        integratedPow = ungatedPow = 0; nGated = nUngated = 0; hasValue = hasUngated = false;
     }
 
     // Returns true when a new 400 ms block has completed.
@@ -393,20 +395,24 @@ public:
             return true;
         }
 
-        ungatedPow = hasUngated ? avgCoef * ungatedPow + (1.0f - avgCoef) * lastBlockPow : lastBlockPow;
+        // Exact running average at first, becoming an EMA once the memory is
+        // full, so a long memory isn't dominated by the first block.
+        nUngated = std::min (nUngated + 1.0f, memBlocks);
+        ungatedPow += (lastBlockPow - ungatedPow) / nUngated;
         hasUngated = true;
         lastBlockGated = blockLufs > powToDb (ungatedPow) - 0.691f - 10.0f;
 
         if (lastBlockGated)
         {
-            integratedPow = hasValue ? avgCoef * integratedPow + (1.0f - avgCoef) * lastBlockPow
-                                     : lastBlockPow;
+            nGated = std::min (nGated + 1.0f, memBlocks);
+            integratedPow += (lastBlockPow - integratedPow) / nGated;
             hasValue = true;
         }
         return true;
     }
 
     bool valid() const noexcept { return hasValue; }
+    float gatedSeconds() const noexcept { return nGated * 0.1f; } // capped at the memory length
     bool lastBlockPassed() const noexcept { return lastBlockGated; }
     float getLufs() const noexcept { return powToDb (integratedPow) - 0.691f; }
 
@@ -414,7 +420,7 @@ private:
     double sub[4] {};
     double acc = 0;
     int count = 0, hopLen = 4800, subIdx = 0, filled = 0;
-    float avgCoef = 0.97f, integratedPow = 0, ungatedPow = 0, lastBlockPow = 0;
+    float memBlocks = 30.0f, nGated = 0, nUngated = 0, integratedPow = 0, ungatedPow = 0, lastBlockPow = 0;
     bool hasValue = false, hasUngated = false, lastBlockGated = false;
 };
 
@@ -478,9 +484,9 @@ public:
         minSpeechSamples  = 0.05 * sr; // speech needed before the reference engages
         engageRampSamples = 0.15 * sr; // speech over which the engage ramp runs
         warmupSamples     = 3.0 * sr;  // speech needed before the trim engages
-        refMemorySamples  = 10.0 * sr; // the reference averages ~10 s of speech
-        trimIn.prepare (sr, 10.0);
-        trimOut.prepare (sr, 10.0);
+        refMemorySamples  = kLongTermSeconds * sr; // long-term speech loudness
+        trimIn.prepare (sr, kLongTermSeconds);
+        trimOut.prepare (sr, kLongTermSeconds);
 
         amountSmoothed.reset (sr, 0.05);
         ceilingSmoothed.reset (sr, 0.05);
@@ -580,7 +586,7 @@ public:
                 if (speech)
                 {
                     speechSamples += 1.0;
-                    refPow += (kInPow - refPow) / (float) std::min (speechSamples, refMemorySamples);
+                    refPow += ((double) kInPow - refPow) / std::min (speechSamples, refMemorySamples);
                 }
 
                 // Until the reference engages, nothing is applied (pre-gain 0,
@@ -589,7 +595,7 @@ public:
                 const bool engaged = speechSamples >= minSpeechSamples;
                 if (engaged)
                 {
-                    const float target = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - (powToDb (refPow) - 0.691f));
+                    const float target = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - (powToDb ((float) refPow) - 0.691f));
                     const float c = speechSamples >= warmupSamples ? preGainCoef
                                   : speechSamples < minSpeechSamples + engageRampSamples ? engageCoef
                                   : preGainCoefWarmup;
@@ -598,6 +604,7 @@ public:
                 const float makeupTarget = engaged ? predictedMakeupDb + trimDb : 0.0f;
                 makeupDb = engageCoef * makeupDb + (1.0f - engageCoef) * makeupTarget;
                 const float pre = dbToGain (preGainDb);
+
 
                 // --- S1 leveler detects 20 ms ahead of the audio ------------
                 for (int ch = 0; ch < nCh; ++ch)
@@ -645,16 +652,27 @@ public:
                 limiter.processFrame (y, nCh);
 
                 // --- Slow trim: compare final output with input (LUFS) -----
+                // Input and output are each measured like a LUFS meter would
+                // (independently gated, ~2 min memory, after the warm-up). The
+                // output is measured *before* the trim gain, so the measurement
+                // doesn't depend on the trim: once both meters have ~10 s of speech
+                // (earlier estimates are too noisy), the trim glides (~8 s)
+                // toward the measured gap, with no feedback loop to overshoot.
+                // It only has to remove a small per-voice offset.
                 float kFinalPow = 0;
                 for (int ch = 0; ch < nCh; ++ch) { const float k = kFinal[ch].process (y[ch]); kFinalPow += k * k; }
-                // Input and output are each measured like a LUFS meter would
-                // (independently gated, ~10 s memory); the trim slowly closes
-                // the gap. It only has to remove a small per-voice offset.
-                const bool inBlock = trimIn.push (kInPow);
-                trimOut.push (kFinalPow);
-                if (speechSamples >= warmupSamples && inBlock && trimIn.lastBlockPassed()
-                    && trimIn.valid() && trimOut.valid())
-                    trimDb = juce::jlimit (-6.0f, 6.0f, trimDb + kTrimStep * (trimIn.getLufs() - trimOut.getLufs()));
+                if (speechSamples >= warmupSamples)
+                {
+                    const float trimGain = dbToGain (trimDb);
+                    const bool inBlock = trimIn.push (kInPow);
+                    trimOut.push (kFinalPow / (trimGain * trimGain));
+                    if (inBlock && trimIn.lastBlockPassed()
+                        && trimIn.gatedSeconds() >= kTrimMinSeconds && trimOut.gatedSeconds() >= kTrimMinSeconds)
+                    {
+                        const float target = juce::jlimit (-6.0f, 6.0f, trimIn.getLufs() - trimOut.getLufs());
+                        trimDb += kTrimStep * (target - trimDb);
+                    }
+                }
 
                 // --- Latency-matched dry path & bypass crossfade ------------
                 const float m = mix.getNextValue();
@@ -677,7 +695,7 @@ public:
         // Remember what we've learned (survives reset() and is saved with the session).
         if (speechSamples >= warmupSamples)
         {
-            learned = { powToDb (refPow) - 0.691f, trimDb, true };
+            learned = { powToDb ((float) refPow) - 0.691f, trimDb, true };
             publishedInputLufs.store (learned.inputLufs);
             publishedTrimDb.store (learned.trimDb);
             publishedValid.store (true);
@@ -688,7 +706,7 @@ public:
         meters.limitGrDb.store (maxLim);
         meters.makeupDb.store (predictedMakeupDb + trimDb);
         meters.inLoudDb.store (trimIn.valid() ? trimIn.getLufs() : -100.0f);
-        meters.outLoudDb.store (trimOut.valid() ? trimOut.getLufs() : -100.0f);
+        meters.outLoudDb.store (trimOut.valid() ? trimOut.getLufs() + trimDb : -100.0f);
     }
 
     Meters meters;
@@ -700,6 +718,10 @@ private:
     static constexpr float kGatePow = 1.0e-5f; // ≈ -50 dB K-weighted
     static constexpr float kReferenceLufs = -18.0f;
     static constexpr float kTrimStep = 0.1f / 8.0f;   // per 100 ms block → ~8 s
+    // Long memory on purpose: a short (10 s) match follows scene-to-scene level
+    // changes and re-expands them, which raised LRA on real AD takes.
+    static constexpr double kLongTermSeconds = 120.0; // reference & loudness-match memory
+    static constexpr float kTrimMinSeconds = 10.0f;   // gated speech needed before the trim moves
 
     // Makeup the compression needs for speech at the -18 LUFS reference,
     // calibrated on real VO. The trim absorbs voice-to-voice differences.
@@ -718,7 +740,7 @@ private:
         if (c.valid)
         {
             // Start as if we'd already heard a few seconds of this voice.
-            refPow = std::pow (10.0f, (c.inputLufs + 0.691f) / 10.0f);
+            refPow = std::pow (10.0, (c.inputLufs + 0.691) / 10.0);
             speechSamples = warmupSamples;
             preGainDb = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - c.inputLufs);
             trimDb = juce::jlimit (-6.0f, 6.0f, c.trimDb);
@@ -772,7 +794,8 @@ private:
 
     float gateCoef = 0, gatePow = 0;
     float preGainCoef = 0, preGainCoefWarmup = 0, preGainDb = 0;
-    float refPow = 0, trimDb = 0, predictedMakeupDb = 0, makeupDb = 0, engageCoef = 0;
+    double refPow = 0; // long-term speech power (double: the 120 s average has tiny per-sample steps)
+    float trimDb = 0, predictedMakeupDb = 0, makeupDb = 0, engageCoef = 0;
     double speechSamples = 0, minSpeechSamples = 0, engageRampSamples = 0, warmupSamples = 0, refMemorySamples = 1;
     GatedLoudness trimIn, trimOut;
 
