@@ -50,9 +50,16 @@ All stages are stereo-linked. Mono and stereo tracks are supported.
 reported to your DAW, so playback stays in sync. When recording through the plugin, use your DAW's
 low-latency monitoring mode (Logic does this automatically).
 
-**Learning your voice:** the input reference and loudness trim settle over the first few seconds
-of speech. The learned values are saved with your session, so a reopened project is matched from
-the first syllable.
+**Learning your voice:** the input reference settles over the first few seconds of speech, and
+the loudness trim starts once it has heard about 10 s. The match is long-term (about the last two
+minutes of speech, like an integrated LUFS reading), so the plugin evens out level changes between
+lines and scenes instead of following them back up. The learned values are saved with your session,
+so a reopened project is matched from the first syllable.
+
+**About LRA:** on narration with gaps between lines (audio description, for example), most of the
+loudness range (LRA) comes from how much speech falls in each 3-second measurement window, not from
+the voice level. A compressor can't change that without filling the gaps, so expect about 1 LU less
+at 100% on that kind of take (9.0 → 8.2 LU on a raw AD take). Continuous reads drop further.
 
 **Tip:** EQ *before* ADCompressor. A high-pass at 70–100 Hz and a gentle cut wherever the
 voice sounds muddy (usually 200–400 Hz) keep low-end energy from driving the compressors. Leave the

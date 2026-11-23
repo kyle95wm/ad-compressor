@@ -1,8 +1,9 @@
 // Headless tests for ADCompressor (run by ctest on every platform in CI).
 // Drives the plugin's processor directly (no plugin host needed) with
 // synthetic voice-like material and checks: loudness match (BS.1770-style
-// gated), the -1 dBFS output ceiling, dynamic spread reduction, bit-exact
-// latency-compensated bypass, and saved-calibration restore.
+// gated), the -1 dBFS output ceiling, dynamic spread reduction, loudness
+// range (LRA) reduction, bit-exact latency-compensated bypass, and
+// saved-calibration restore.
 //
 // Usage:
 //   ADCompressorTest                       run the test suite
@@ -70,6 +71,37 @@ Loudness measure (const juce::AudioBuffer<float>& b, double sr, int startSample)
     return r;
 }
 
+// EBU R128 loudness range: 3 s windows every 100 ms, -70 LUFS absolute and
+// -20 LU relative gate, 95th minus 10th percentile.
+double loudnessRange (const juce::AudioBuffer<float>& b, double sr, int startSample)
+{
+    const int nCh = b.getNumChannels();
+    std::vector<ad::KWeighting> k ((size_t) nCh);
+    for (auto& f : k) f.prepare (sr);
+    const int hop = (int) (0.1 * sr);
+    std::vector<double> hops;
+    double acc = 0; int cnt = 0;
+    for (int i = 0; i < b.getNumSamples(); ++i)
+    {
+        for (int ch = 0; ch < nCh; ++ch) { const double v = k[(size_t) ch].process (b.getSample (ch, i)); if (i >= startSample) acc += v * v; }
+        if (i >= startSample && ++cnt == hop) { hops.push_back (acc / hop); acc = 0; cnt = 0; }
+    }
+    std::vector<double> st;
+    for (size_t h = 30; h <= hops.size(); ++h)
+    {
+        double e = 0; for (size_t j = h - 30; j < h; ++j) e += hops[j];
+        const double l = -0.691 + 10.0 * std::log10 (std::max (e / 30.0, 1e-12));
+        if (l > -70.0) st.push_back (l);
+    }
+    if (st.empty()) return 0;
+    double e = 0; for (double l : st) e += std::pow (10.0, l / 10.0);
+    const double rel = 10.0 * std::log10 (e / (double) st.size()) - 20.0;
+    std::vector<double> g; for (double l : st) if (l > rel) g.push_back (l);
+    std::sort (g.begin(), g.end());
+    auto pct = [&g] (double p) { return g[(size_t) (p * (double) (g.size() - 1))]; };
+    return pct (0.95) - pct (0.10);
+}
+
 float peakDb (const juce::AudioBuffer<float>& b, int start)
 {
     float p = 0;
@@ -125,6 +157,8 @@ juce::AudioBuffer<float> makeVoice (double sr, double seconds, int nCh, float le
     }
     return b;
 }
+
+
 
 juce::AudioProcessorParameter* findParam (juce::AudioProcessor& p, const juce::String& name)
 {
@@ -239,8 +273,10 @@ int main (int argc, char* argv[])
     for (auto cfg : { Config { 48000.0, 2, 512 }, Config { 44100.0, 1, 128 }, Config { 96000.0, 2, 1024 } })
     {
         std::cout << "\n=== " << cfg.sr << " Hz, " << cfg.nCh << " ch, block " << cfg.block << " ===\n";
-        const auto input = makeVoice (cfg.sr, 60.0, cfg.nCh, -14.0f, 1234);
-        const int settle = (int) (30.0 * cfg.sr); // steady state
+        // The loudness match is long-term (like an integrated LUFS reading
+        // over a whole take), so test on a long take after a short warm-up.
+        const auto input = makeVoice (cfg.sr, 150.0, cfg.nCh, -14.0f, 1234);
+        const int settle = (int) (15.0 * cfg.sr); // warm-up excluded
         const auto inL = measure (input, cfg.sr, settle);
         std::cout << "  input: " << juce::String (inL.integrated, 2) << " LUFS, spread "
                   << juce::String (inL.spread, 2) << " LU, peak " << juce::String (peakDb (input, 0), 2) << " dBFS\n";
@@ -303,7 +339,9 @@ int main (int argc, char* argv[])
             }
         }
 
-        // Saved calibration: a reloaded instance should start matched at once.
+        // Saved calibration: a reloaded instance should start exactly where the
+        // session left off, with no warm-up. Its first 5 s must sound like
+        // the same 5 s through the fully warmed-up instance.
         {
             auto first = load (cfg.sr, cfg.block, cfg.nCh);
             findParam (*first, "Amount")->setValueNotifyingHost (0.8f);
@@ -314,19 +352,19 @@ int main (int argc, char* argv[])
             auto second = load (cfg.sr, cfg.block, cfg.nCh);
             second->setStateInformation (state.getData(), (int) state.getSize());
             second->prepareToPlay (cfg.sr, cfg.block);
-            // Only the first 5 s, measured from the very start.
             juce::AudioBuffer<float> head (cfg.nCh, (int) (5.0 * cfg.sr));
             for (int ch = 0; ch < cfg.nCh; ++ch) head.copyFrom (ch, 0, input, ch, 0, head.getNumSamples());
-            const auto hIn = measure (head, cfg.sr, 0);
-            const auto hOut = measure (run (*second, head, cfg.block), cfg.sr, 0);
-            std::cout << "  restored session, first 5 s: in " << juce::String (hIn.integrated, 2)
-                      << " / out " << juce::String (hOut.integrated, 2) << " LUFS\n";
-            check (std::abs (hOut.integrated - hIn.integrated) < 1.5, "restored calibration matched within 1.5 dB in the first 5 s");
+            const auto hRestored = measure (run (*second, head, cfg.block), cfg.sr, 0);
+            const auto hWarm = measure (run (*first, head, cfg.block), cfg.sr, 0); // continues, already warm
+            std::cout << "  first 5 s: restored session " << juce::String (hRestored.integrated, 2)
+                      << " / warmed-up " << juce::String (hWarm.integrated, 2) << " LUFS\n";
+            check (std::abs (hRestored.integrated - hWarm.integrated) < 1.0,
+                   "restored session starts within 1 dB of a warmed-up one");
         }
 
         // Level jump: a 10 dB quieter take should still come out matched.
         {
-            const auto quiet = makeVoice (cfg.sr, 60.0, cfg.nCh, -24.0f, 99);
+            const auto quiet = makeVoice (cfg.sr, 150.0, cfg.nCh, -24.0f, 99);
             auto inst = load (cfg.sr, cfg.block, cfg.nCh);
             findParam (*inst, "Amount")->setValueNotifyingHost (0.7f);
             const auto qIn = measure (quiet, cfg.sr, settle);
@@ -335,6 +373,24 @@ int main (int argc, char* argv[])
                       << juce::String (qOut.integrated, 2) << " LUFS\n";
             check (std::abs (qOut.integrated - qIn.integrated) < 1.0, "quiet take loudness matched within 1 dB");
             check (qOut.spread < qIn.spread * 0.9, "quiet take still gets compressed (input reference)");
+        }
+
+        // Scene-level changes (quiet and loud stretches, 25 s each): full amount
+        // must lower the loudness range, not follow the changes back up.
+        {
+            const int sec = (int) (25.0 * cfg.sr);
+            juce::AudioBuffer<float> scenes (cfg.nCh, sec * 6);
+            for (int part = 0; part < 6; ++part)
+            {
+                const auto v = makeVoice (cfg.sr, 25.0, cfg.nCh, (part % 2) ? -20.0f : -14.0f, 500u + (unsigned) part);
+                for (int ch = 0; ch < cfg.nCh; ++ch) scenes.copyFrom (ch, part * sec, v, ch, 0, sec);
+            }
+            auto inst = load (cfg.sr, cfg.block, cfg.nCh);
+            findParam (*inst, "Amount")->setValueNotifyingHost (1.0f);
+            const double lraIn = loudnessRange (scenes, cfg.sr, settle);
+            const double lraOut = loudnessRange (run (*inst, scenes, cfg.block), cfg.sr, settle);
+            std::cout << "  scene changes @100%: LRA " << juce::String (lraIn, 1) << " -> " << juce::String (lraOut, 1) << " LU\n";
+            check (lraOut < lraIn * 0.5, "full amount at least halves loudness range (LRA) across scene changes");
         }
     }
 
