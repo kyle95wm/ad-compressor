@@ -27,6 +27,11 @@ your delivery spec asks for peaks at or below −6 and your takes are recorded w
 consonants. Note that this is a sample-peak limiter: if your spec is in dBTP (true peak), keep a
 true-peak limiter on your final mix as well.
 
+**Ride** (on by default) switches the slow line-to-line rider on or off. Turn it off to keep the
+natural level differences between lines (the compressors, de-esser and limiter still work as
+usual, and the loudness match is unchanged). The switch glides over 200 ms, so you can flip it
+during playback.
+
 Double-click the knob to return to 50%. **Bypass** (also linked to your DAW's bypass) crossfades
 over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The meters show the rider's gain
 (**RIDE**, from the centre: right lifts, left cuts), gain reduction for **COMP** (all three compressor
@@ -40,7 +45,7 @@ stages), **DE-ESS** and **LIMIT**, plus the current makeup gain.
 | 1. Leveler | RMS, 15 ms attack / 180 ms release, 10 dB soft knee, **20 ms lookahead**: evens out phrase-to-phrase level | ratio 1:1 → 3.5:1 |
 | 2. Snap compressor | Peak, **3 ms attack** lets consonant onsets through before clamping, 60 ms release: the "snap" | ratio 1:1 → 6:1 |
 | 3. Peak catcher | 20:1, 0.3 ms attack, a few dB above stage 2: trims the transients stage 2 let through | off → on |
-| Rider | Evens out line-to-line level like a fader ride. Compares the compressed level over the last ~200 ms of speech with the long-term average and glides toward the difference (80 ms). Holds still between lines, so gaps don't pump and room tone isn't lifted | off → full, within ±6 dB |
+| Rider | Evens out line-to-line level like a fader ride. Compares the compressed level over the last ~200 ms of speech with the long-term average and glides toward the difference (80 ms). Holds still between lines, so gaps don't pump and room tone isn't lifted | off → full, within ±6 dB (**Ride** switch turns it off) |
 | Presence | High shelf at 4 kHz | 0 → +3.5 dB |
 | De-esser | Split-band at 6 kHz, follows the voice (relative to the full band), not a fixed threshold | 0 → up to 10 dB |
 | Makeup | Predicted makeup for the knob position (instant) plus a slow trim measured the way a LUFS meter does | 0 → ~11 dB |

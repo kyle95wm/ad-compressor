@@ -499,6 +499,7 @@ public:
         amountSmoothed.reset (sr, 0.05);
         ceilingSmoothed.reset (sr, 0.05);
         mix.reset (sr, 0.02);
+        rideMix.reset (sr, 0.2);
         mix.setCurrentAndTargetValue (1.0f);
         firstBlock = true;
         lastPresenceDb = -1000.0f;
@@ -540,8 +541,10 @@ public:
     }
 
     // ceilingDb: limiter ceiling in dBFS (the plugin offers -1 or -6); changes glide over 50 ms.
+    // rideOn: the rider's gain glides to 0 dB when off (it keeps learning, so it
+    // picks up where it left off when switched back on).
     void process (juce::AudioBuffer<float>& buffer, float amountTarget, bool bypassed,
-                  float ceilingDb = kDefaultCeilingDb) noexcept
+                  float ceilingDb = kDefaultCeilingDb, bool rideOn = true) noexcept
     {
         const int n = buffer.getNumSamples();
         const int nCh = std::min (channels, buffer.getNumChannels());
@@ -556,10 +559,12 @@ public:
             amountSmoothed.setCurrentAndTargetValue (amountTarget);
             ceilingSmoothed.setCurrentAndTargetValue (ceilingDb);
             mix.setCurrentAndTargetValue (bypassed ? 0.0f : 1.0f);
+            rideMix.setCurrentAndTargetValue (rideOn ? 1.0f : 0.0f);
             firstBlock = false;
         }
         amountSmoothed.setTargetValue (amountTarget);
         mix.setTargetValue (bypassed ? 0.0f : 1.0f);
+        rideMix.setTargetValue (rideOn ? 1.0f : 0.0f);
         ceilingSmoothed.setTargetValue (ceilingDb);
 
         auto* const* data = buffer.getArrayOfWritePointers();
@@ -685,7 +690,8 @@ public:
                 }
 
                 // --- Makeup: predicted curve + slow trim + ride, minus pre-gain
-                const float makeup = dbToGain (makeupDb + rideDb) / preD; // exact inverse of the pre-gain
+                rideOutDb = rideDb * rideMix.getNextValue(); // Ride switch (glides 200 ms)
+                const float makeup = dbToGain (makeupDb + rideOutDb) / preD; // exact inverse of the pre-gain
                 for (int ch = 0; ch < nCh; ++ch) y[ch] *= makeup;
 
                 // --- Brickwall limiter (adds latency) -----------------------
@@ -743,7 +749,7 @@ public:
             publishedValid.store (true);
         }
 
-        meters.rideDb.store (rideDb);
+        meters.rideDb.store (rideOutDb);
         meters.compGrDb.store (maxComp);
         meters.deEssGrDb.store (maxDs);
         meters.limitGrDb.store (maxLim);
@@ -871,7 +877,7 @@ private:
     GatedLoudness trimIn, trimOut;
 
     double rideShortPow = 0, rideLongPow = 0, rideSamples = 0, rideMinSamples = 1;
-    float rideFastPow = 0, rideShortCoef = 0, rideGainCoef = 0, rideDb = 0, rideTargetDb = 0, rideStrength = 0;
+    float rideFastPow = 0, rideShortCoef = 0, rideGainCoef = 0, rideDb = 0, rideTargetDb = 0, rideStrength = 0, rideOutDb = 0;
 
     Calibration learned;
     std::atomic<float> pendingInputLufs { -100.0f }, pendingTrimDb { 0.0f }, pendingRideLufs { -100.0f };
@@ -885,6 +891,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> amountSmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> ceilingSmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> rideMix; // Ride switch
 };
 
 } // namespace ad
