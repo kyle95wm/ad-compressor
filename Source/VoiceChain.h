@@ -43,7 +43,8 @@
 
 //
 // The learned reference and trim are saved with the plugin state, so a
-// reopened session starts already calibrated.
+// reopened session starts already calibrated. Relearn (requestRelearn) forgets
+// them when a different take is swapped in, without a jump in level.
 // =============================================================================
 
 namespace ad
@@ -444,6 +445,17 @@ public:
         std::atomic<float> makeupDb { 0 };   // compression makeup (predicted + trim)
         std::atomic<float> inLoudDb { -100 };
         std::atomic<float> outLoudDb { -100 };
+        std::atomic<int> calStage { 0 };       // CalStage
+        std::atomic<float> calProgress { 0 };  // 0..1 across the stages, 1 when calibrated
+    };
+
+    // How far the plugin has got learning the voice (shown in the editor).
+    enum CalStage : int
+    {
+        waitingForSpeech = 0, // nothing heard yet
+        learningLevel,        // input reference & rider, first ~3 s of speech
+        matchingLoudness,     // loudness trim: ~10 s of speech, then settling
+        calibrated            // trim within 0.5 dB of its target (latched until Relearn)
     };
 
     // Learned level calibration, saved with the plugin state so a reopened
@@ -454,6 +466,7 @@ public:
         float trimDb = 0.0f;
         float rideLufs = -100.0f;  // rider's long-term level (compressed + predicted makeup; since 0.4)
         bool valid = false;
+        bool matched = false;      // the loudness trim had settled (since 0.5)
     };
 
     void prepare (double sr, int maxBlock, int numChannels)
@@ -531,13 +544,21 @@ public:
         pendingTrimDb.store (c.trimDb);
         pendingRideLufs.store (c.rideLufs);
         pendingValid.store (c.valid);
+        pendingMatched.store (c.matched);
         pendingFlag.store (true);
     }
+
+    // Thread-safe: forget the learned level (e.g. a different take was swapped
+    // in) and recalibrate from the next few seconds of speech. Applied on the
+    // audio thread at the next block. Glitch-free: the current gains are kept
+    // and glide to the new values as they're learned.
+    void requestRelearn() noexcept { relearnFlag.store (true); }
 
     // Thread-safe snapshot of the latest learned calibration.
     Calibration getCalibration() const noexcept
     {
-        return { publishedInputLufs.load(), publishedTrimDb.load(), publishedRideLufs.load(), publishedValid.load() };
+        return { publishedInputLufs.load(), publishedTrimDb.load(), publishedRideLufs.load(), publishedValid.load(),
+                 publishedMatched.load() };
     }
 
     // ceilingDb: limiter ceiling in dBFS (the plugin offers -1 or -6); changes glide over 50 ms.
@@ -552,6 +573,8 @@ public:
 
         if (consumePendingCalibration())
             applyCalibration (learned);
+        if (relearnFlag.exchange (false))
+            relearn();
 
         amountTarget = juce::jlimit (0.0f, 1.0f, amountTarget);
         if (firstBlock)
@@ -611,7 +634,7 @@ public:
                 if (engaged)
                 {
                     const float target = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - (powToDb ((float) refPow) - 0.691f));
-                    const float c = speechSamples >= warmupSamples ? preGainCoef
+                    const float c = speechSamples >= warmupSamples || relearning ? preGainCoef
                                   : speechSamples < minSpeechSamples + engageRampSamples ? engageCoef
                                   : preGainCoefWarmup;
                     preGainDb = c * preGainDb + (1.0f - c) * target;
@@ -723,6 +746,9 @@ public:
                         && trimIn.gatedSeconds() >= kTrimMinSeconds && trimOut.gatedSeconds() >= kTrimMinSeconds)
                     {
                         const float target = juce::jlimit (-6.0f, 6.0f, trimIn.getLufs() - trimOut.getLufs());
+                        trimErr = std::abs (target - trimDb);
+                        if (trimErr0 < 0.0f) trimErr0 = trimErr;
+                        if (trimErr < kMatchedWithinDb) matched = true; // latched until Relearn
                         trimDb += kTrimStep * (target - trimDb);
                     }
                 }
@@ -749,11 +775,42 @@ public:
         if (speechSamples >= warmupSamples)
         {
             learned = { powToDb ((float) refPow) - 0.691f, trimDb,
-                        rideSamples >= rideMinSamples ? powToDb ((float) rideLongPow) - 0.691f : -100.0f, true };
+                        rideSamples >= rideMinSamples ? powToDb ((float) rideLongPow) - 0.691f : -100.0f, true, matched };
             publishedInputLufs.store (learned.inputLufs);
             publishedTrimDb.store (learned.trimDb);
             publishedRideLufs.store (learned.rideLufs);
+            publishedMatched.store (matched);
             publishedValid.store (true);
+        }
+
+        // Calibration progress: level 0-25%, trim gathering speech 25-75%,
+        // trim settling 75-100%.
+        {
+            int stage = calibrated;
+            float progress = 1.0f;
+            if (! matched)
+            {
+                if (speechSamples < minSpeechSamples)
+                {
+                    stage = waitingForSpeech; progress = 0.0f;
+                }
+                else if (speechSamples < warmupSamples)
+                {
+                    stage = learningLevel; progress = 0.25f * (float) (speechSamples / warmupSamples);
+                }
+                else
+                {
+                    stage = matchingLoudness;
+                    const float gathered = std::min (trimIn.gatedSeconds(), trimOut.gatedSeconds()) / kTrimMinSeconds;
+                    if (gathered < 1.0f || trimErr0 < 0.0f)
+                        progress = 0.25f + 0.5f * std::min (gathered, 1.0f);
+                    else
+                        progress = 0.75f + 0.25f * juce::jlimit (0.0f, 1.0f, (trimErr0 - trimErr)
+                                                                       / std::max (0.01f, trimErr0 - kMatchedWithinDb));
+                }
+            }
+            meters.calStage.store (stage);
+            meters.calProgress.store (std::min (progress, 0.99f + (stage == calibrated ? 0.01f : 0.0f)));
         }
 
         meters.rideDb.store (rideOutDb);
@@ -778,6 +835,8 @@ private:
     // changes and re-expands them, which raised LRA on real AD takes.
     static constexpr double kLongTermSeconds = 120.0; // reference & loudness-match memory
     static constexpr float kTrimMinSeconds = 10.0f;   // gated speech needed before the trim moves
+    static constexpr float kMatchedWithinDb = 0.5f;   // trim this close to its target = calibrated
+    static constexpr double kRelearnPriorSeconds = 1.0; // weight of the old level estimate after Relearn
 
     // Slow rider (line-to-line leveling).
     // Tuned on a 43-min AD episode against a commercial "input riding" compressor:
@@ -805,7 +864,8 @@ private:
     {
         if (! pendingFlag.exchange (false))
             return false;
-        learned = { pendingInputLufs.load(), pendingTrimDb.load(), pendingRideLufs.load(), pendingValid.load() };
+        learned = { pendingInputLufs.load(), pendingTrimDb.load(), pendingRideLufs.load(), pendingValid.load(),
+                    pendingMatched.load() };
         return true;
     }
 
@@ -819,6 +879,8 @@ private:
             preGainDb = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - c.inputLufs);
             trimDb = juce::jlimit (-6.0f, 6.0f, c.trimDb);
             makeupDb = predictedMakeupDb + trimDb;
+            matched = c.matched; relearning = false;
+            trimErr = 0; trimErr0 = -1.0f;
 
             resetRider();
             if (c.rideLufs > -70.0f)
@@ -831,8 +893,27 @@ private:
         else
         {
             refPow = 0; speechSamples = 0; preGainDb = 0; trimDb = 0; makeupDb = 0;
+            matched = false; relearning = false; trimErr = 0; trimErr0 = -1.0f;
             resetRider();
         }
+    }
+
+    // Forget the learned level but keep the gains currently applied, so the
+    // output doesn't jump: the input reference restarts as if it had heard 1 s
+    // of speech (enough to keep the first words from swinging it, little
+    // enough that the new take takes over within a few seconds), the pre-gain
+    // keeps its normal (2 s) glide, and the trim holds until it has measured
+    // ~10 s of the new take. The rider is left alone: it measures after the
+    // input reference, so a different recording level doesn't change what it sees.
+    void relearn() noexcept
+    {
+        speechSamples = std::min (speechSamples, kRelearnPriorSeconds * sampleRate);
+        relearning = speechSamples >= minSpeechSamples + engageRampSamples; // already running: keep the slow glide
+        trimIn.reset(); trimOut.reset();
+        matched = false; trimErr = 0; trimErr0 = -1.0f;
+        learned.valid = false; learned.matched = false;
+        publishedValid.store (false);
+        publishedMatched.store (false);
     }
 
     void updateParameters (float a) noexcept
@@ -880,6 +961,9 @@ private:
     float preGainCoef = 0, preGainCoefWarmup = 0, preGainDb = 0;
     double refPow = 0; // long-term speech power (double: the 120 s average has tiny per-sample steps)
     float trimDb = 0, predictedMakeupDb = 0, makeupDb = 0, engageCoef = 0;
+    bool matched = false;                 // trim settled once (latched until Relearn)
+    bool relearning = false;              // since Relearn: pre-gain keeps its settled glide speed
+    float trimErr = 0, trimErr0 = -1.0f;  // |trim target - trim| now / at the trim's first move
     double speechSamples = 0, minSpeechSamples = 0, engageRampSamples = 0, warmupSamples = 0, refMemorySamples = 1;
     GatedLoudness trimIn, trimOut;
 
@@ -888,9 +972,9 @@ private:
 
     Calibration learned;
     std::atomic<float> pendingInputLufs { -100.0f }, pendingTrimDb { 0.0f }, pendingRideLufs { -100.0f };
-    std::atomic<bool> pendingValid { false }, pendingFlag { false };
+    std::atomic<bool> pendingValid { false }, pendingMatched { false }, pendingFlag { false }, relearnFlag { false };
     std::atomic<float> publishedInputLufs { -100.0f }, publishedTrimDb { 0.0f }, publishedRideLufs { -100.0f };
-    std::atomic<bool> publishedValid { false };
+    std::atomic<bool> publishedValid { false }, publishedMatched { false };
 
     bool firstBlock = true;
     float lastPresenceDb = -1000.0f;

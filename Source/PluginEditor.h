@@ -27,6 +27,7 @@ private:
     juce::ToggleButton bypassButton { "Bypass" };
     juce::ToggleButton ceilingButton { "Ceiling" };
     juce::ToggleButton rideButton { "Ride" };
+    juce::TextButton relearnButton { "RELEARN" };
 
     UpdateFooter footer;
 
@@ -36,7 +37,14 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> rideAttachment;
 
     float ride = 0, compGr = 0, deEssGr = 0, limitGr = 0, makeup = 0;
-    juce::Rectangle<float> meterArea;
+    juce::Rectangle<float> meterArea, matchArea;
+
+    // Calibration status (MATCH row).
+    int calStage = 0;
+    float calProgress = 0;
+    bool relearnRequested = false;   // clicked, waiting for the audio thread to pick it up
+    juce::uint32 flashStartMs = 0;   // green flash when calibration completes
+    bool haveStage = false;          // no flash for a session that opens already calibrated
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADCompressorEditor)
 };

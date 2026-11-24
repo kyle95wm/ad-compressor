@@ -2,6 +2,8 @@
 
 using namespace brand;
 
+static constexpr float relearnButtonWidth = 64.0f;
+
 // =============================================================================
 ADCompressorEditor::ADCompressorEditor (ADCompressorProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p),
@@ -41,6 +43,18 @@ ADCompressorEditor::ADCompressorEditor (ADCompressorProcessor& p)
     rideAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         p.apvts, ADCompressorProcessor::rideId, rideButton);
 
+    // Relearn: forget the learned voice level (after swapping in a different take).
+    relearnButton.setTooltip ("Forget the learned voice level and recalibrate from the next few seconds of speech. "
+                              "Use it after swapping in a different take or recording level. No jump in level.");
+    relearnButton.onClick = [this]
+    {
+        audioProcessor.relearn();
+        relearnRequested = true;
+        flashStartMs = 0;
+        repaint (meterArea.toNearestInt().expanded (2));
+    };
+    addAndMakeVisible (relearnButton);
+
     addAndMakeVisible (footer);
 
     setSize (390, 566);
@@ -62,6 +76,15 @@ void ADCompressorEditor::timerCallback()
     ballistics (deEssGr, m.deEssGrDb.load());
     ballistics (limitGr, m.limitGrDb.load());
     makeup = makeup * 0.8f + m.makeupDb.load() * 0.2f;
+
+    const int stage = m.calStage.load();
+    if (relearnRequested && stage < ad::VoiceChain::calibrated)
+        relearnRequested = false; // the audio thread has started over
+    if (haveStage && stage == ad::VoiceChain::calibrated && calStage != ad::VoiceChain::calibrated)
+        flashStartMs = juce::Time::getMillisecondCounter();
+    calStage = stage;
+    calProgress = m.calProgress.load();
+    haveStage = true;
     repaint (meterArea.toNearestInt().expanded (2));
 }
 
@@ -83,13 +106,57 @@ void ADCompressorEditor::paint (juce::Graphics& g)
     drawMeter (g, rows.removeFromTop (rowH), "DE-ESS", deEssGr, 12.0f, juce::Colour (0xff5ec8f2));
     drawMeter (g, rows.removeFromTop (rowH), "LIMIT",  limitGr, 12.0f, warn);
 
+    // MATCH row: makeup, calibration status, Relearn (button on the right).
     auto matchRow = rows;
+
+    // Brief green flash when calibration completes.
+    if (flashStartMs != 0)
+    {
+        const float t = (float) (juce::Time::getMillisecondCounter() - flashStartMs) / 1500.0f;
+        if (t < 1.0f)
+        {
+            g.setColour (good.withAlpha (0.22f * (1.0f - t)));
+            g.fillRoundedRectangle (matchRow.expanded (2.0f, 0.0f), 4.0f);
+        }
+        else
+            flashStartMs = 0;
+    }
+
     g.setFont (juce::FontOptions (captionSize, juce::Font::bold));
     g.setColour (textDim);
     g.drawText ("MATCH", matchRow.removeFromLeft (56.0f), juce::Justification::centredLeft);
+    matchRow.removeFromRight (relearnButtonWidth + 6.0f);
+
     g.setColour (textMain);
-    g.drawText ((makeup >= 0 ? "+" : "") + juce::String (makeup, 1) + " dB makeup  (auto)",
+    g.drawText ((makeup >= 0 ? "+" : "") + juce::String (makeup, 1) + " dB makeup",
                 matchRow, juce::Justification::centredLeft);
+
+    // Non-ASCII text must go through CharPointer_UTF8 (see BrandLookAndFeel.h).
+    const int stage = relearnRequested ? (int) ad::VoiceChain::waitingForSpeech : calStage;
+    const bool done = stage == ad::VoiceChain::calibrated;
+    const juce::String status = done ? juce::String ("calibrated")
+        : stage == ad::VoiceChain::learningLevel ? juce::String (juce::CharPointer_UTF8 ("learning level\xe2\x80\xa6"))
+        : stage == ad::VoiceChain::matchingLoudness ? juce::String (juce::CharPointer_UTF8 ("matching loudness\xe2\x80\xa6"))
+        : juce::String ("waiting for speech");
+    g.setFont (juce::FontOptions (captionSize, done ? juce::Font::bold : juce::Font::plain));
+    const float textW = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), status);
+    auto statusArea = matchRow.removeFromRight (textW + 2.0f);
+    g.setColour (done ? good : textDim);
+    g.drawText (status, statusArea, juce::Justification::centredRight);
+    if (done)
+    {
+        const float d = 6.0f;
+        g.fillEllipse (statusArea.getX() - d - 5.0f, statusArea.getCentreY() - d * 0.5f, d, d);
+    }
+    else if (stage != ad::VoiceChain::waitingForSpeech)
+    {
+        // Progress line under the status text.
+        auto line = statusArea.withTop (statusArea.getBottom() - 3.0f).withHeight (2.0f);
+        g.setColour (track);
+        g.fillRoundedRectangle (line, 1.0f);
+        g.setColour (accent);
+        g.fillRoundedRectangle (line.withWidth (line.getWidth() * juce::jlimit (0.0f, 1.0f, calProgress)), 1.0f);
+    }
 }
 
 void ADCompressorEditor::drawMeter (juce::Graphics& g, juce::Rectangle<float> area, const juce::String& label,
@@ -164,6 +231,13 @@ void ADCompressorEditor::resized()
 
     meterArea = area.removeFromBottom (130).reduced (8).toFloat();
     area.removeFromBottom (12);
+    {
+        // Relearn sits at the right end of the MATCH row (the last of 5 rows).
+        const float rowH = meterArea.getHeight() / 5.0f;
+        auto matchRow = meterArea.withTop (meterArea.getBottom() - rowH);
+        relearnButton.setBounds (matchRow.removeFromRight (relearnButtonWidth)
+                                     .withSizeKeepingCentre (relearnButtonWidth, 18.0f).toNearestInt());
+    }
 
     knob.setBounds (area.withSizeKeepingCentre (std::min (area.getWidth(), area.getHeight()),
                                                 area.getHeight()));

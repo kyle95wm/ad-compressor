@@ -70,12 +70,18 @@ void ADCompressorProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
 
     // Save the learned level calibration so the session reopens already matched.
+    // Drop whatever a restored state carried first: after a Relearn (or before
+    // the warm-up) there is nothing valid to save, and the old values must not
+    // come back on the next reopen.
+    for (auto* key : { "calInputLufs", "calTrimDb", "calRideLufs", "calRideLufs2", "calMatched" })
+        state.removeProperty (key, nullptr);
     const auto cal = chain.getCalibration();
     if (cal.valid)
     {
         state.setProperty ("calInputLufs", cal.inputLufs, nullptr);
         state.setProperty ("calTrimDb", cal.trimDb, nullptr);
         state.setProperty ("calRideLufs2", cal.rideLufs, nullptr); // includes predicted makeup (0.4+)
+        state.setProperty ("calMatched", cal.matched, nullptr);    // 0.5+
     }
 
     if (auto xml = state.createXml())
@@ -96,6 +102,9 @@ void ADCompressorProcessor::setStateInformation (const void* data, int sizeInByt
                 // "calRideLufs" (0.2-0.3) was measured without the predicted makeup, so it does not
                 // apply any more; without the new key the rider relearns (3 s of speech).
                 cal.rideLufs = (float) state.getProperty ("calRideLufs2", -100.0f);
+                // Absent before 0.5: those sessions were saved after real playback, so
+                // treat them as calibrated rather than showing "matching" again.
+                cal.matched = (bool) state.getProperty ("calMatched", true);
                 cal.valid = std::isfinite (cal.inputLufs) && cal.inputLufs > -70.0f;
                 chain.setCalibration (cal);
             }
