@@ -8,7 +8,7 @@
 // Usage:
 //   ADCompressorTest                       run the test suite
 //   ADCompressorTest --render take.wav     render a take at 0/50/100% next to it
-//   ADCompressorTest --render-to in.wav out.wav [amount] [ceiling]   one offline bounce (e.g. 100 -6)
+//   ADCompressorTest --render-to in.wav out.wav [amount] [ceiling] [ride]   one offline bounce (e.g. 100 -6 off)
 //   ADCompressorTest --calibrate take.wav  print steady-state makeup per knob position
 //   ADCompressorTest --trace [sampleRate]  print the learned reference/trim over time
 
@@ -269,7 +269,7 @@ int main (int argc, char* argv[])
         return 0;
     }
 
-    // --render-to <in.wav> <out.wav> [amount 0..100] [ceiling -1|-6]: one bounce
+    // --render-to <in.wav> <out.wav> [amount 0..100] [ceiling -1|-6] [ride on|off]: one bounce
     // through the plugin (like an offline bounce in a DAW), latency removed.
     if (argc >= 4 && juce::String (argv[1]) == "--render-to")
     {
@@ -278,11 +278,13 @@ int main (int argc, char* argv[])
         if (! reader) { std::cerr << "Can't read " << argv[2] << "\n"; return 1; }
         const float amount = argc >= 5 ? juce::String (argv[4]).getFloatValue() : 100.0f;
         const bool minus6 = argc >= 6 && juce::String (argv[5]).getFloatValue() < -3.0f;
+        const bool rideOn = ! (argc >= 7 && juce::String (argv[6]).equalsIgnoreCase ("off"));
         const int nCh = (int) std::min<unsigned> (2, reader->numChannels);
         const double sr = reader->sampleRate;
         auto inst = load (sr, 512, nCh);
         findParam (*inst, "Amount")->setValueNotifyingHost (amount / 100.0f);
         findParam (*inst, "Ceiling")->setValueNotifyingHost (minus6 ? 1.0f : 0.0f);
+        findParam (*inst, "Ride")->setValueNotifyingHost (rideOn ? 1.0f : 0.0f);
         const int lat = inst->getLatencySamples();
         juce::AudioBuffer<float> buf (nCh, (int) reader->lengthInSamples + lat);
         buf.clear();
@@ -298,7 +300,7 @@ int main (int argc, char* argv[])
                                                  .withSampleRate (sr).withNumChannels (nCh).withBitsPerSample (24));
         if (! w || ! w->writeFromAudioSampleBuffer (trimmed, 0, trimmed.getNumSamples())) { std::cerr << "Write failed\n"; return 1; }
         std::cout << "Rendered " << dest.getFullPathName() << " (" << amount << "%, ceiling " << (minus6 ? -6 : -1)
-                  << " dBFS, latency " << lat << ")\n";
+                  << " dBFS, ride " << (rideOn ? "on" : "off") << ", latency " << lat << ")\n";
         return 0;
     }
 
@@ -425,6 +427,39 @@ int main (int argc, char* argv[])
             const double lraOut = loudnessRange (run (*inst, scenes, cfg.block), cfg.sr, settle);
             std::cout << "  scene changes @100%: LRA " << juce::String (lraIn, 1) << " -> " << juce::String (lraOut, 1) << " LU\n";
             check (lraOut < lraIn * 0.5, "full amount at least halves loudness range (LRA) across scene changes");
+        }
+
+        // Ride switch. Lines alternate loud/quiet (8 dB apart, 3 s each, 1 s gaps):
+        // the level differences the rider evens out. Off must leave more of them.
+        {
+            const int line = (int) (3.0 * cfg.sr), gap = (int) (1.0 * cfg.sr);
+            const int nLines = 40;
+            juce::AudioBuffer<float> lines (cfg.nCh, nLines * (line + gap));
+            lines.clear();
+            for (int l = 0; l < nLines; ++l)
+            {
+                const auto v = makeVoice (cfg.sr, 3.0, cfg.nCh, (l % 2) ? -22.0f : -14.0f, 900u + (unsigned) l);
+                for (int ch = 0; ch < cfg.nCh; ++ch) lines.copyFrom (ch, l * (line + gap), v, ch, 0, line);
+            }
+            auto runRide = [&] (bool on)
+            {
+                auto inst = load (cfg.sr, cfg.block, cfg.nCh);
+                findParam (*inst, "Amount")->setValueNotifyingHost (1.0f);
+                auto* ride = findParam (*inst, "Ride");
+                check (ride != nullptr && ride->getValue() > 0.5f, "plugin exposes a Ride parameter, on by default");
+                ride->setValueNotifyingHost (on ? 1.0f : 0.0f);
+                return run (*inst, lines, cfg.block);
+            };
+            const auto onOut = runRide (true), offOut = runRide (false);
+            const double lraIn = loudnessRange (lines, cfg.sr, settle);
+            const double lraOn = loudnessRange (onOut, cfg.sr, settle), lraOff = loudnessRange (offOut, cfg.sr, settle);
+            const auto lIn = measure (lines, cfg.sr, settle), lOn = measure (onOut, cfg.sr, settle), lOff = measure (offOut, cfg.sr, settle);
+            std::cout << "  alternating lines @100%: LRA " << juce::String (lraIn, 1) << " -> ride on "
+                      << juce::String (lraOn, 1) << " (diff " << juce::String (lOn.integrated - lIn.integrated, 2)
+                      << " dB), ride off " << juce::String (lraOff, 1) << " LU (diff "
+                      << juce::String (lOff.integrated - lIn.integrated, 2) << " dB)\n";
+            check (lraOn < lraOff - 0.5, "Ride on evens out line-to-line level; off leaves it");
+            check (std::abs (lOff.integrated - lIn.integrated) < 1.0, "ride off: loudness matched within 1 dB");
         }
     }
 

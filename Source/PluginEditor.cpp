@@ -33,9 +33,17 @@ ADCompressorEditor::ADCompressorEditor (ADCompressorProcessor& p)
     ceilingAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         p.apvts, ADCompressorProcessor::ceilingId, ceilingButton);
 
+    // Ride switch: the slow line-to-line rider, on by default.
+    makePill (rideButton, "RIDE OFF", "RIDE ON", juce::Colour (0xffb48cf2));
+    rideButton.setTooltip ("Slow rider: evens out line-to-line level like a fader ride. Turn it off to keep "
+                           "the natural level differences between lines (the compressors still work).");
+    addAndMakeVisible (rideButton);
+    rideAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        p.apvts, ADCompressorProcessor::rideId, rideButton);
+
     addAndMakeVisible (footer);
 
-    setSize (340, 566);
+    setSize (390, 566);
     startTimerHz (30);
 }
 
@@ -145,9 +153,12 @@ void ADCompressorEditor::resized()
 
     auto bottom = area.removeFromBottom (36);
     {
-        auto row = bottom.withSizeKeepingCentre (296, 30);
-        bypassButton.setBounds (row.removeFromLeft (130));
+        auto row = bottom.withSizeKeepingCentre (356, 30);
+        bypassButton.setBounds (row.removeFromLeft (100));
         ceilingButton.setBounds (row.removeFromRight (150));
+        row.removeFromLeft (8);
+        row.removeFromRight (8);
+        rideButton.setBounds (row);
     }
     area.removeFromBottom (14);
 

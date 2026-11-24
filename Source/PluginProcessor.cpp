@@ -10,7 +10,8 @@ ADCompressorProcessor::ADCompressorProcessor()
     amountParam = apvts.getRawParameterValue (amountId);
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (bypassId));
     ceilingParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ceilingId));
-    jassert (amountParam != nullptr && bypassParam != nullptr && ceilingParam != nullptr);
+    rideParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (rideId));
+    jassert (amountParam != nullptr && bypassParam != nullptr && ceilingParam != nullptr && rideParam != nullptr);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ADCompressorProcessor::createLayout()
@@ -31,6 +32,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ADCompressorProcessor::creat
     // recorded with headroom (on hot takes it limits consonants audibly).
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { ceilingId, 1 }, "Ceiling", juce::StringArray { "-1 dBFS", "-6 dBFS" }, 0));
+
+    // Slow rider on/off. Defaults to on, so sessions saved before 0.3 sound the same.
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { rideId, 2 }, "Ride", true));
 
     return layout;
 }
@@ -57,7 +62,7 @@ void ADCompressorProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         buffer.clear (ch, 0, buffer.getNumSamples());
 
     chain.process (buffer, amountParam->load() / 100.0f, bypassParam->get(),
-                   ceilingParam->getIndex() == 1 ? -6.0f : -1.0f);
+                   ceilingParam->getIndex() == 1 ? -6.0f : -1.0f, rideParam->get());
 }
 
 void ADCompressorProcessor::getStateInformation (juce::MemoryBlock& destData)

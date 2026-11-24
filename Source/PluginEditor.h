@@ -26,12 +26,14 @@ private:
     juce::Slider knob;
     juce::ToggleButton bypassButton { "Bypass" };
     juce::ToggleButton ceilingButton { "Ceiling" };
+    juce::ToggleButton rideButton { "Ride" };
 
     UpdateFooter footer;
 
     juce::AudioProcessorValueTreeState::SliderAttachment knobAttachment;
     juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> ceilingAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> rideAttachment;
 
     float ride = 0, compGr = 0, deEssGr = 0, limitGr = 0, makeup = 0;
     juce::Rectangle<float> meterArea;

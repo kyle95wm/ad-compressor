@@ -43,6 +43,7 @@ public:
     static constexpr const char* amountId = "amount";
     static constexpr const char* bypassId = "bypass";
     static constexpr const char* ceilingId = "ceiling"; // 0 = -1 dBFS, 1 = -6 dBFS
+    static constexpr const char* rideId = "ride";       // slow rider on/off (added in 0.3.0)
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -51,6 +52,7 @@ private:
     std::atomic<float>* amountParam = nullptr;
     juce::AudioParameterBool* bypassParam = nullptr;
     juce::AudioParameterChoice* ceilingParam = nullptr;
+    juce::AudioParameterBool* rideParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADCompressorProcessor)
 };
