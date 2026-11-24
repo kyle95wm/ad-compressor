@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # The release workflow passes -DAD_COMPRESSOR_VERSION=<tag without the leading v>,
 # so the version baked into the plugin (and used by the update checker) always
 # matches the GitHub Release it ships in.
-set(AD_COMPRESSOR_VERSION "0.3.0" CACHE STRING "Plugin version (major.minor.patch)")
+set(AD_COMPRESSOR_VERSION "0.4.0" CACHE STRING "Plugin version (major.minor.patch)")
 
 # Must be set before project() to take effect.
 if(APPLE)

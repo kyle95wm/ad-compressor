@@ -452,7 +452,7 @@ public:
     {
         float inputLufs = -100.0f; // long-term speech loudness of the input
         float trimDb = 0.0f;
-        float rideLufs = -100.0f;  // rider's long-term level (compressed, pre-makeup)
+        float rideLufs = -100.0f;  // rider's long-term level (compressed + predicted makeup; since 0.4)
         bool valid = false;
     };
 
@@ -663,15 +663,22 @@ public:
                 // Evens out line-to-line level, like a fader rider. It sits
                 // after the compressors (in front of them, they'd squash its
                 // moves back out) and measures the compressed, K-weighted
-                // level over the last ~200 ms of *active* speech only,
-                // compares it with the long-term average measured the same
+                // level over the last ~200 ms of *active* speech only, with
+                // the predicted (knob-dependent) makeup applied. That keeps its
+                // long-term reference valid when the knob moves: without it,
+                // more compression read as a quieter voice and the rider lifted
+                // everything by up to 6 dB until its ~2 min memory caught up.
+                // (Trim and pre-gain are left out so it doesn't chase their
+                // slow moves or fight the loudness match.) It compares that short-term level
+                // with the long-term average measured the same
                 // way, and glides the gain toward the difference. Between
                 // lines it holds still, so gaps don't pump and room tone isn't
                 // pulled up. Zero-mean by construction, so the loudness match
                 // barely moves.
                 {
+                    const float gMakeup = dbToGain (predictedMakeupDb); // knob-dependent part of the makeup only
                     float kMidPow = 0;
-                    for (int ch = 0; ch < nCh; ++ch) { const float k = kMid[ch].process (y[ch]); kMidPow += k * k; }
+                    for (int ch = 0; ch < nCh; ++ch) { const float k = kMid[ch].process (y[ch] * gMakeup); kMidPow += k * k; }
                     rideFastPow = gateCoef * rideFastPow + (1.0f - gateCoef) * kMidPow;
                     const bool active = speech && engaged && (rideSamples < 1.0 || powToDb (rideFastPow) > powToDb ((float) rideLongPow) - kRideGateBelowDb);
                     if (active)

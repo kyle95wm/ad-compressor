@@ -245,6 +245,110 @@ int main (int argc, char* argv[])
         return 0;
     }
 
+    // --sweep <file> [seconds]: fresh chain per knob position; prints how far the
+    // output loudness sits from the input in the first 30 s (before the trim
+    // moves) and where the trim settles, i.e. the predicted makeup's error.
+    // --jump <file> <from%> <to%> <atSec> [ride on|off]: knob jump mid-take; prints the
+    // output-minus-input loudness in 10 s windows, to see how fast it recovers.
+    // --robust <file>: one line for batch runs over many voices/mics/levels:
+    // settled trim and loudness match at 100%, and the extra level a 20->100%
+    // knob jump at 150 s causes vs. a steady 100% render of the same audio
+    // (content cancels out), over 0-30 / 30-90 / 90-150 s after the jump.
+    if (argc >= 3 && (juce::String (argv[1]) == "--sweep" || juce::String (argv[1]) == "--jump"
+                      || juce::String (argv[1]) == "--robust"))
+    {
+        const bool sweep = juce::String (argv[1]) == "--sweep";
+        const bool robust = juce::String (argv[1]) == "--robust";
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (afm.createReaderFor (juce::File (argv[2])));
+        if (! reader) { std::cerr << "Can't read " << argv[2] << "\n"; return 1; }
+        const double sr = reader->sampleRate;
+        const int nCh = (int) std::min<unsigned> (2, reader->numChannels);
+        const double maxSec = sweep && argc >= 4 ? juce::String (argv[3]).getDoubleValue() : 1.0e9;
+        const int len = (int) std::min<juce::int64> (reader->lengthInSamples, (juce::int64) (maxSec * sr));
+        juce::AudioBuffer<float> src (nCh, len);
+        reader->read (&src, 0, len, 0, true, nCh > 1);
+
+        auto window = [&] (const juce::AudioBuffer<float>& b, double t0, double t1)
+        {
+            const int s0 = (int) (t0 * sr), s1 = std::min (b.getNumSamples(), (int) (t1 * sr));
+            juce::AudioBuffer<float> w (b.getNumChannels(), std::max (1, s1 - s0));
+            for (int ch = 0; ch < b.getNumChannels(); ++ch) w.copyFrom (ch, 0, b, ch, s0, w.getNumSamples());
+            return measure (w, sr, 0).integrated;
+        };
+        // amount schedule -> (output, trim trace every 10 s)
+        const bool rideOn = ! (! sweep && argc >= 7 && juce::String (argv[6]).equalsIgnoreCase ("off"));
+        auto render = [&] (std::function<float (double)> amountAt, std::vector<float>& trims)
+        {
+            ad::VoiceChain chain; chain.prepare (sr, 512, nCh);
+            juce::AudioBuffer<float> buf (src);
+            const int lat = chain.getLatency();
+            juce::AudioBuffer<float> out (nCh, len);
+            for (int s = 0; s < len + lat; s += 512)
+            {
+                const int n = 512;
+                juce::AudioBuffer<float> blk (nCh, n); blk.clear();
+                for (int ch = 0; ch < nCh; ++ch)
+                    if (s < len) blk.copyFrom (ch, 0, src, ch, s, std::min (n, len - s));
+                chain.process (blk, amountAt (s / sr), false, ad::VoiceChain::kDefaultCeilingDb, rideOn);
+                for (int ch = 0; ch < nCh; ++ch)
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const int o = s + i - lat;
+                        if (o >= 0 && o < len) out.setSample (ch, o, blk.getSample (ch, i));
+                    }
+                if ((s / 512) % (int) (10.0 * sr / 512) == 0) trims.push_back (chain.getCalibration().trimDb);
+            }
+            return out;
+        };
+
+        if (robust)
+        {
+            const double at = 150.0, t = len / sr;
+            if (t < at + 150.0) { std::cerr << "need >= 300 s\n"; return 1; }
+            std::vector<float> trSteady, trJump;
+            auto steady = render ([] (double) { return 1.0f; }, trSteady);
+            auto jump = render ([at] (double x) { return x < at ? 0.2f : 1.0f; }, trJump);
+            auto step = [&] (double a, double b) { return window (jump, at + a, at + b) - window (steady, at + a, at + b); };
+            std::cout << "trim100 " << juce::String (trSteady.back(), 2)
+                      << "  match100 " << juce::String (window (steady, 60, t) - window (src, 60, t), 2)
+                      << "  jump " << juce::String (step (0, 30), 2) << " " << juce::String (step (30, 90), 2)
+                      << " " << juce::String (step (90, 150), 2)
+                      << "  peak " << juce::String (peakDb (steady, 0), 2) << "\n";
+            return 0;
+        }
+
+        if (sweep)
+        {
+            std::cout << "amount  first30s(out-in)  whole(out-in)  settled trim\n";
+            for (int step = 0; step <= 10; ++step)
+            {
+                const float a = step / 10.0f;
+                std::vector<float> trims;
+                auto out = render ([a] (double) { return a; }, trims);
+                const double t = len / sr;
+                std::cout << juce::String (a, 1) << "     "
+                          << juce::String (window (out, 0, 30) - window (src, 0, 30), 2) << "             "
+                          << juce::String (window (out, 0, t) - window (src, 0, t), 2) << "          "
+                          << juce::String (trims.back(), 2) << "\n";
+            }
+            return 0;
+        }
+
+        const float from = argc >= 4 ? juce::String (argv[3]).getFloatValue() / 100.0f : 0.3f;
+        const float to   = argc >= 5 ? juce::String (argv[4]).getFloatValue() / 100.0f : 1.0f;
+        const double at  = argc >= 6 ? juce::String (argv[5]).getDoubleValue() : 120.0;
+        std::vector<float> trims;
+        auto out = render ([=] (double t) { return t < at ? from : to; }, trims);
+        std::cout << "window   out-in (dB)   trim\n";
+        for (double t = 0; t + 10 <= len / sr; t += 10)
+            std::cout << juce::String (t, 0) << "-" << juce::String (t + 10, 0) << "s   "
+                      << juce::String (window (out, t, t + 10) - window (src, t, t + 10), 2) << "   "
+                      << juce::String (trims[(size_t) std::min ((double) trims.size() - 1, (t + 10) / 10)], 2)
+                      << (t + 10 > at && t <= at ? "   <- knob jump" : "") << "\n";
+        return 0;
+    }
+
     if (argc >= 2 && juce::String (argv[1]) == "--trace")
     {
         const double sr = argc >= 3 ? juce::String (argv[2]).getDoubleValue() : 48000.0;
@@ -460,6 +564,32 @@ int main (int argc, char* argv[])
                       << juce::String (lOff.integrated - lIn.integrated, 2) << " dB)\n";
             check (lraOn < lraOff - 0.5, "Ride on evens out line-to-line level; off leaves it");
             check (std::abs (lOff.integrated - lIn.integrated) < 1.0, "ride off: loudness matched within 1 dB");
+        }
+
+        // Knob jump: 2 min at 20%, then cranked to 100%. The next 30 s must
+        // match a steady 100% render of the same audio (so content cancels).
+        // Before 0.4 the rider read the extra compression as a quieter voice
+        // and lifted everything by up to 6 dB for minutes.
+        {
+            const double at = 120.0;
+            const auto src = makeVoice (cfg.sr, at + 60.0, cfg.nCh, -20.0f, 4242);
+            auto render = [&] (bool jump)
+            {
+                ad::VoiceChain chain; chain.prepare (cfg.sr, cfg.block, cfg.nCh);
+                juce::AudioBuffer<float> buf (src);
+                for (int s = 0; s < buf.getNumSamples(); s += cfg.block)
+                {
+                    juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), cfg.nCh, s,
+                                                   std::min (cfg.block, buf.getNumSamples() - s));
+                    chain.process (view, jump && s < at * cfg.sr ? 0.2f : 1.0f, false);
+                }
+                juce::AudioBuffer<float> w (cfg.nCh, (int) (30.0 * cfg.sr));
+                for (int ch = 0; ch < cfg.nCh; ++ch) w.copyFrom (ch, 0, buf, ch, (int) (at * cfg.sr), w.getNumSamples());
+                return measure (w, cfg.sr, 0).integrated;
+            };
+            const double excess = render (true) - render (false);
+            std::cout << "  knob jump 20->100%: next 30 s " << juce::String (excess, 2) << " dB vs steady 100%\n";
+            check (std::abs (excess) < 1.0, "cranking the knob doesn't jump the level (within 1 dB of steady)");
         }
     }
 
