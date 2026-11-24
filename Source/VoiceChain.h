@@ -17,7 +17,9 @@
 //       │                                                                  │
 //       │                                          [Presence] ─► [De-esser]
 //       │                                                                  │
-//       │                         × makeup (predicted + trim, ÷ pre-gain) ◄┘
+//       │                                                     [Slow rider] ◄┘
+//       │                                                                  │
+//       │                  × makeup (predicted + trim + ride, ÷ pre-gain) ◄┘
 //       │                                                                  │
 //       │                                  slow trim ◄── [Look-ahead limiter]
 //       │                                                                  │
@@ -435,6 +437,7 @@ public:
 
     struct Meters
     {
+        std::atomic<float> rideDb { 0 };     // slow rider gain (+ = lifting)
         std::atomic<float> compGrDb { 0 };   // S1 + S2 + S3
         std::atomic<float> deEssGrDb { 0 };
         std::atomic<float> limitGrDb { 0 };
@@ -449,6 +452,7 @@ public:
     {
         float inputLufs = -100.0f; // long-term speech loudness of the input
         float trimDb = 0.0f;
+        float rideLufs = -100.0f;  // rider's long-term level (compressed, pre-makeup)
         bool valid = false;
     };
 
@@ -469,6 +473,7 @@ public:
         {
             kIn[ch].prepare (sr);
             kFinal[ch].prepare (sr);
+            kMid[ch].prepare (sr);
             presence[ch].reset();
         }
 
@@ -485,6 +490,9 @@ public:
         engageRampSamples = 0.15 * sr; // speech over which the engage ramp runs
         warmupSamples     = 3.0 * sr;  // speech needed before the trim engages
         refMemorySamples  = kLongTermSeconds * sr; // long-term speech loudness
+        rideShortCoef     = timeCoef (kRideDetectMs, sr);  // runs during active speech only
+        rideGainCoef      = timeCoef (kRideGlideMs, sr);
+        rideMinSamples    = kRideMinSpeechSeconds * sr;
         trimIn.prepare (sr, kLongTermSeconds);
         trimOut.prepare (sr, kLongTermSeconds);
 
@@ -501,12 +509,13 @@ public:
     {
         s1.reset(); s2.reset(); s3.reset();
         deEsser.reset(); limiter.reset();
-        for (int ch = 0; ch < kMaxChannels; ++ch) { kIn[ch].reset(); kFinal[ch].reset(); presence[ch].reset(); }
+        for (int ch = 0; ch < kMaxChannels; ++ch) { kIn[ch].reset(); kFinal[ch].reset(); kMid[ch].reset(); presence[ch].reset(); }
         for (auto& d : dryDelay) std::fill (d.begin(), d.end(), 0.0f);
         for (auto& d : laBuf) std::fill (d.begin(), d.end(), 0.0f);
         std::fill (laPre.begin(), laPre.end(), 1.0f);
         dryPos = laPos = 0;
         gatePow = 0;
+        resetRider();
         trimIn.reset(); trimOut.reset();
         consumePendingCalibration();
         applyCalibration (learned);
@@ -519,6 +528,7 @@ public:
     {
         pendingInputLufs.store (c.inputLufs);
         pendingTrimDb.store (c.trimDb);
+        pendingRideLufs.store (c.rideLufs);
         pendingValid.store (c.valid);
         pendingFlag.store (true);
     }
@@ -526,7 +536,7 @@ public:
     // Thread-safe snapshot of the latest learned calibration.
     Calibration getCalibration() const noexcept
     {
-        return { publishedInputLufs.load(), publishedTrimDb.load(), publishedValid.load() };
+        return { publishedInputLufs.load(), publishedTrimDb.load(), publishedRideLufs.load(), publishedValid.load() };
     }
 
     // ceilingDb: limiter ceiling in dBFS (the plugin offers -1 or -6); changes glide over 50 ms.
@@ -644,8 +654,38 @@ public:
                 // --- De-esser ------------------------------------------------
                 deEsser.processFrame (y, nCh);
 
-                // --- Makeup: predicted curve + slow trim, minus pre-gain ----
-                const float makeup = dbToGain (makeupDb) / preD; // exact inverse of the pre-gain
+                // --- Slow rider ---------------------------------------------
+                // Evens out line-to-line level, like a fader rider. It sits
+                // after the compressors (in front of them, they'd squash its
+                // moves back out) and measures the compressed, K-weighted
+                // level over the last ~200 ms of *active* speech only,
+                // compares it with the long-term average measured the same
+                // way, and glides the gain toward the difference. Between
+                // lines it holds still, so gaps don't pump and room tone isn't
+                // pulled up. Zero-mean by construction, so the loudness match
+                // barely moves.
+                {
+                    float kMidPow = 0;
+                    for (int ch = 0; ch < nCh; ++ch) { const float k = kMid[ch].process (y[ch]); kMidPow += k * k; }
+                    rideFastPow = gateCoef * rideFastPow + (1.0f - gateCoef) * kMidPow;
+                    const bool active = speech && engaged && (rideSamples < 1.0 || powToDb (rideFastPow) > powToDb ((float) rideLongPow) - kRideGateBelowDb);
+                    if (active)
+                    {
+                        const double p = (double) kMidPow;
+                        rideSamples += 1.0;
+                        rideShortPow = rideSamples <= 1.0 ? p : rideShortCoef * rideShortPow + (1.0 - rideShortCoef) * p;
+                        rideLongPow += (p - rideLongPow) / std::min (rideSamples, refMemorySamples);
+                        if (rideSamples >= rideMinSamples)
+                        {
+                            const float diff = powToDb ((float) rideLongPow) - powToDb ((float) rideShortPow);
+                            rideTargetDb = juce::jlimit (-kRideRangeDb, kRideRangeDb, rideStrength * diff);
+                        }
+                        rideDb = rideGainCoef * rideDb + (1.0f - rideGainCoef) * rideTargetDb;
+                    }
+                }
+
+                // --- Makeup: predicted curve + slow trim + ride, minus pre-gain
+                const float makeup = dbToGain (makeupDb + rideDb) / preD; // exact inverse of the pre-gain
                 for (int ch = 0; ch < nCh; ++ch) y[ch] *= makeup;
 
                 // --- Brickwall limiter (adds latency) -----------------------
@@ -695,12 +735,15 @@ public:
         // Remember what we've learned (survives reset() and is saved with the session).
         if (speechSamples >= warmupSamples)
         {
-            learned = { powToDb ((float) refPow) - 0.691f, trimDb, true };
+            learned = { powToDb ((float) refPow) - 0.691f, trimDb,
+                        rideSamples >= rideMinSamples ? powToDb ((float) rideLongPow) - 0.691f : -100.0f, true };
             publishedInputLufs.store (learned.inputLufs);
             publishedTrimDb.store (learned.trimDb);
+            publishedRideLufs.store (learned.rideLufs);
             publishedValid.store (true);
         }
 
+        meters.rideDb.store (rideDb);
         meters.compGrDb.store (maxComp);
         meters.deEssGrDb.store (maxDs);
         meters.limitGrDb.store (maxLim);
@@ -723,6 +766,24 @@ private:
     static constexpr double kLongTermSeconds = 120.0; // reference & loudness-match memory
     static constexpr float kTrimMinSeconds = 10.0f;   // gated speech needed before the trim moves
 
+    // Slow rider (line-to-line leveling).
+    // Tuned on a 43-min AD episode against a commercial "input riding" compressor:
+    // fast enough to act within a line (a slower rider only follows drift), and
+    // the gain is held across gaps, so a line's quieter ending carries into the
+    // next line's start (lifts short cues, keeps the first word's emphasis).
+    static constexpr float kRideDetectMs = 200.0f;        // detector memory, in active speech
+    static constexpr float kRideGlideMs = 80.0f;          // gain glide (only moves during speech)
+    static constexpr float kRideRangeDb = 6.0f;           // max lift / cut
+    static constexpr float kRideGateBelowDb = 15.0f;      // "active speech": within this of the reference
+    static constexpr double kRideMinSpeechSeconds = 3.0;  // speech heard before the rider moves
+    static constexpr float kRideMaxStrength = 1.0f;       // fraction of the level difference removed at 100%
+
+    void resetRider() noexcept
+    {
+        rideShortPow = rideLongPow = 0; rideSamples = 0; rideFastPow = 0;
+        rideDb = rideTargetDb = 0;
+    }
+
     // Makeup the compression needs for speech at the -18 LUFS reference,
     // calibrated on real VO. The trim absorbs voice-to-voice differences.
     static float predictMakeupDb (float a) noexcept { return 8.5f * a + 2.7f * a * a; }
@@ -731,7 +792,7 @@ private:
     {
         if (! pendingFlag.exchange (false))
             return false;
-        learned = { pendingInputLufs.load(), pendingTrimDb.load(), pendingValid.load() };
+        learned = { pendingInputLufs.load(), pendingTrimDb.load(), pendingRideLufs.load(), pendingValid.load() };
         return true;
     }
 
@@ -745,10 +806,19 @@ private:
             preGainDb = juce::jlimit (-12.0f, 30.0f, kReferenceLufs - c.inputLufs);
             trimDb = juce::jlimit (-6.0f, 6.0f, c.trimDb);
             makeupDb = predictedMakeupDb + trimDb;
+
+            resetRider();
+            if (c.rideLufs > -70.0f)
+            {
+                // Rider resumes at its learned level (as if it had heard 10 s).
+                rideLongPow = rideShortPow = std::pow (10.0, (c.rideLufs + 0.691) / 10.0);
+                rideSamples = std::max (rideMinSamples, 10.0 * sampleRate);
+            }
         }
         else
         {
             refPow = 0; speechSamples = 0; preGainDb = 0; trimDb = 0; makeupDb = 0;
+            resetRider();
         }
     }
 
@@ -775,6 +845,7 @@ private:
         }
 
         deEsser.setAmount (a);
+        rideStrength = kRideMaxStrength * a;
         predictedMakeupDb = predictMakeupDb (a);
     }
 
@@ -785,7 +856,7 @@ private:
     DeEsser deEsser;
     LookaheadLimiter limiter;
     Biquad presence[kMaxChannels];
-    KWeighting kIn[kMaxChannels], kFinal[kMaxChannels];
+    KWeighting kIn[kMaxChannels], kFinal[kMaxChannels], kMid[kMaxChannels];
 
     static constexpr double kLookaheadMs = 20.0;
     std::vector<std::vector<float>> dryDelay, laBuf;
@@ -799,10 +870,13 @@ private:
     double speechSamples = 0, minSpeechSamples = 0, engageRampSamples = 0, warmupSamples = 0, refMemorySamples = 1;
     GatedLoudness trimIn, trimOut;
 
+    double rideShortPow = 0, rideLongPow = 0, rideSamples = 0, rideMinSamples = 1;
+    float rideFastPow = 0, rideShortCoef = 0, rideGainCoef = 0, rideDb = 0, rideTargetDb = 0, rideStrength = 0;
+
     Calibration learned;
-    std::atomic<float> pendingInputLufs { -100.0f }, pendingTrimDb { 0.0f };
+    std::atomic<float> pendingInputLufs { -100.0f }, pendingTrimDb { 0.0f }, pendingRideLufs { -100.0f };
     std::atomic<bool> pendingValid { false }, pendingFlag { false };
-    std::atomic<float> publishedInputLufs { -100.0f }, publishedTrimDb { 0.0f };
+    std::atomic<float> publishedInputLufs { -100.0f }, publishedTrimDb { 0.0f }, publishedRideLufs { -100.0f };
     std::atomic<bool> publishedValid { false };
 
     bool firstBlock = true;

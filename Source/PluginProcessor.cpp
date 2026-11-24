@@ -70,6 +70,7 @@ void ADCompressorProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         state.setProperty ("calInputLufs", cal.inputLufs, nullptr);
         state.setProperty ("calTrimDb", cal.trimDb, nullptr);
+        state.setProperty ("calRideLufs", cal.rideLufs, nullptr);
     }
 
     if (auto xml = state.createXml())
@@ -87,6 +88,7 @@ void ADCompressorProcessor::setStateInformation (const void* data, int sizeInByt
                 ad::VoiceChain::Calibration cal;
                 cal.inputLufs = (float) state.getProperty ("calInputLufs");
                 cal.trimDb = (float) state.getProperty ("calTrimDb", 0.0f);
+                cal.rideLufs = (float) state.getProperty ("calRideLufs", -100.0f); // absent before 0.2
                 cal.valid = std::isfinite (cal.inputLufs) && cal.inputLufs > -70.0f;
                 chain.setCalibration (cal);
             }

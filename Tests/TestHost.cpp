@@ -8,6 +8,7 @@
 // Usage:
 //   ADCompressorTest                       run the test suite
 //   ADCompressorTest --render take.wav     render a take at 0/50/100% next to it
+//   ADCompressorTest --render-to in.wav out.wav [amount] [ceiling]   one offline bounce (e.g. 100 -6)
 //   ADCompressorTest --calibrate take.wav  print steady-state makeup per knob position
 //   ADCompressorTest --trace [sampleRate]  print the learned reference/trim over time
 
@@ -265,6 +266,39 @@ int main (int argc, char* argv[])
                 }
             }
         }
+        return 0;
+    }
+
+    // --render-to <in.wav> <out.wav> [amount 0..100] [ceiling -1|-6]: one bounce
+    // through the plugin (like an offline bounce in a DAW), latency removed.
+    if (argc >= 4 && juce::String (argv[1]) == "--render-to")
+    {
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (afm.createReaderFor (juce::File (argv[2])));
+        if (! reader) { std::cerr << "Can't read " << argv[2] << "\n"; return 1; }
+        const float amount = argc >= 5 ? juce::String (argv[4]).getFloatValue() : 100.0f;
+        const bool minus6 = argc >= 6 && juce::String (argv[5]).getFloatValue() < -3.0f;
+        const int nCh = (int) std::min<unsigned> (2, reader->numChannels);
+        const double sr = reader->sampleRate;
+        auto inst = load (sr, 512, nCh);
+        findParam (*inst, "Amount")->setValueNotifyingHost (amount / 100.0f);
+        findParam (*inst, "Ceiling")->setValueNotifyingHost (minus6 ? 1.0f : 0.0f);
+        const int lat = inst->getLatencySamples();
+        juce::AudioBuffer<float> buf (nCh, (int) reader->lengthInSamples + lat);
+        buf.clear();
+        reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, nCh > 1);
+        auto out = run (*inst, buf, 512);
+        juce::AudioBuffer<float> trimmed (nCh, (int) reader->lengthInSamples);
+        for (int ch = 0; ch < nCh; ++ch) trimmed.copyFrom (ch, 0, out, ch, lat, trimmed.getNumSamples());
+        juce::File dest (argv[3]);
+        dest.deleteFile();
+        juce::WavAudioFormat wf;
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (dest);
+        auto w = wf.createWriterFor (stream, juce::AudioFormatWriterOptions{}
+                                                 .withSampleRate (sr).withNumChannels (nCh).withBitsPerSample (24));
+        if (! w || ! w->writeFromAudioSampleBuffer (trimmed, 0, trimmed.getNumSamples())) { std::cerr << "Write failed\n"; return 1; }
+        std::cout << "Rendered " << dest.getFullPathName() << " (" << amount << "%, ceiling " << (minus6 ? -6 : -1)
+                  << " dBFS, latency " << lat << ")\n";
         return 0;
     }
 
