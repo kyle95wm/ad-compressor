@@ -35,7 +35,7 @@ ADCompressorEditor::ADCompressorEditor (ADCompressorProcessor& p)
 
     addAndMakeVisible (footer);
 
-    setSize (340, 540);
+    setSize (340, 566);
     startTimerHz (30);
 }
 
@@ -49,6 +49,7 @@ void ADCompressorEditor::timerCallback()
     const auto& m = audioProcessor.getMeters();
     // Fast attack, slow fall so the meters are readable.
     auto ballistics = [] (float& v, float target) { v = target > v ? target : v * 0.85f + target * 0.15f; };
+    ride = ride * 0.7f + m.rideDb.load() * 0.3f; // bipolar, so smooth both ways
     ballistics (compGr, m.compGrDb.load());
     ballistics (deEssGr, m.deEssGrDb.load());
     ballistics (limitGr, m.limitGrDb.load());
@@ -61,14 +62,15 @@ void ADCompressorEditor::paint (juce::Graphics& g)
     g.fillAll (bg);
     // Non-ASCII text must go through CharPointer_UTF8 (see BrandLookAndFeel.h).
     drawHeader (g, getLocalBounds(), JucePlugin_Name, UpdateChecker::getCurrentVersion(),
-                juce::String (juce::CharPointer_UTF8 ("Snappy VO  \xc2\xb7  3-stage comp  \xc2\xb7  de-ess  \xc2\xb7  limit")));
+                juce::String (juce::CharPointer_UTF8 ("Snappy VO  \xc2\xb7  ride  \xc2\xb7  3-stage comp  \xc2\xb7  de-ess  \xc2\xb7  limit")));
 
     // Meter panel.
     g.setColour (panel);
     g.fillRoundedRectangle (meterArea.expanded (8.0f), 8.0f);
 
     auto rows = meterArea;
-    const float rowH = rows.getHeight() / 4.0f;
+    const float rowH = rows.getHeight() / 5.0f;
+    drawRideMeter (g, rows.removeFromTop (rowH), ride, 6.0f);
     drawMeter (g, rows.removeFromTop (rowH), "COMP",   compGr,  24.0f, accent);
     drawMeter (g, rows.removeFromTop (rowH), "DE-ESS", deEssGr, 12.0f, juce::Colour (0xff5ec8f2));
     drawMeter (g, rows.removeFromTop (rowH), "LIMIT",  limitGr, 12.0f, warn);
@@ -105,6 +107,34 @@ void ADCompressorEditor::drawMeter (juce::Graphics& g, juce::Rectangle<float> ar
     }
 }
 
+// Rider gain is bipolar (lift or cut), so its bar grows from the centre.
+void ADCompressorEditor::drawRideMeter (juce::Graphics& g, juce::Rectangle<float> area, float rideDb, float rangeDb)
+{
+    g.setFont (juce::FontOptions (captionSize, juce::Font::bold));
+    g.setColour (textDim);
+    g.drawText ("RIDE", area.removeFromLeft (56.0f), juce::Justification::centredLeft);
+
+    auto valueArea = area.removeFromRight (54.0f);
+    g.setColour (textMain);
+    const bool zero = std::abs (rideDb) < 0.05f;
+    g.drawText (zero ? juce::String ("0.0") : (rideDb > 0 ? "+" : "") + juce::String (rideDb, 1), valueArea,
+                juce::Justification::centredRight);
+
+    auto bar = area.reduced (4.0f, area.getHeight() * 0.3f);
+    g.setColour (track);
+    g.fillRoundedRectangle (bar, 3.0f);
+    const float half = bar.getWidth() * 0.5f;
+    const float w = half * juce::jlimit (0.0f, 1.0f, std::abs (rideDb) / rangeDb);
+    if (w > 0.5f)
+    {
+        g.setColour (juce::Colour (0xffb48cf2));
+        g.fillRoundedRectangle (rideDb > 0 ? bar.withX (bar.getCentreX()).withWidth (w)
+                                           : bar.withX (bar.getCentreX() - w).withWidth (w), 3.0f);
+    }
+    g.setColour (textDim);
+    g.fillRect (bar.getCentreX() - 0.5f, bar.getY() - 2.0f, 1.0f, bar.getHeight() + 4.0f);
+}
+
 void ADCompressorEditor::resized()
 {
     auto area = getLocalBounds().reduced (margin);
@@ -121,7 +151,7 @@ void ADCompressorEditor::resized()
     }
     area.removeFromBottom (14);
 
-    meterArea = area.removeFromBottom (104).reduced (8).toFloat();
+    meterArea = area.removeFromBottom (130).reduced (8).toFloat();
     area.removeFromBottom (12);
 
     knob.setBounds (area.withSizeKeepingCentre (std::min (area.getWidth(), area.getHeight()),

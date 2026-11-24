@@ -18,6 +18,7 @@ private:
     void timerCallback() override;
     void drawMeter (juce::Graphics&, juce::Rectangle<float> area, const juce::String& label,
                     float grDb, float rangeDb, juce::Colour colour);
+    void drawRideMeter (juce::Graphics&, juce::Rectangle<float> area, float rideDb, float rangeDb);
 
     ADCompressorProcessor& audioProcessor;
     brand::LookAndFeel lnf;
@@ -32,7 +33,7 @@ private:
     juce::AudioProcessorValueTreeState::ButtonAttachment bypassAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> ceilingAttachment;
 
-    float compGr = 0, deEssGr = 0, limitGr = 0, makeup = 0;
+    float ride = 0, compGr = 0, deEssGr = 0, limitGr = 0, makeup = 0;
     juce::Rectangle<float> meterArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADCompressorEditor)

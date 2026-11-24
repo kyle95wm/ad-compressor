@@ -5,7 +5,7 @@ A **single-knob voice-over compressor** for a snappy, upfront, broadcast-style v
 ![ADCompressor plugin window](docs/screenshot.png)
 
 Turn one knob and ADCompressor runs your voice through three compression stages, a
-presence lift, a de-esser and a brickwall limiter, all scaled together. The output is
+line-to-line level rider, a presence lift, a de-esser and a brickwall limiter, all scaled together. The output is
 **automatically loudness-matched to the input**, so turning the knob (or bypassing the plugin) changes the
 *sound*, not the volume. That makes A/B comparisons honest. You hear what the processing does,
 not "louder sounds better".
@@ -19,7 +19,7 @@ voice is coming in and adapts, so you don't need to gain-stage into it.
 |--------|--------------|
 | 0%     | Transparent (only the safety limiter can act) |
 | 25–50% | Gentle leveling and a little extra snap and presence: a natural, polished voice |
-| 75–100% | Dense, forward, "radio" voice: tight level, punchy consonants, sibilance kept in check |
+| 75–100% | Dense, forward, "radio" voice: tight level, lines ridden even, punchy consonants, sibilance kept in check |
 
 **Ceiling** switches the output limiter between **−1 dBFS** (default) and **−6 dBFS**. Use −6 if
 your delivery spec asks for peaks at or below −6 and your takes are recorded with some headroom
@@ -28,8 +28,9 @@ consonants. Note that this is a sample-peak limiter: if your spec is in dBTP (tr
 true-peak limiter on your final mix as well.
 
 Double-click the knob to return to 50%. **Bypass** (also linked to your DAW's bypass) crossfades
-over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The meters show gain reduction for
-**COMP** (all three compressor stages), **DE-ESS** and **LIMIT**, plus the current makeup gain.
+over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The meters show the rider's gain
+(**RIDE**, from the centre: right lifts, left cuts), gain reduction for **COMP** (all three compressor
+stages), **DE-ESS** and **LIMIT**, plus the current makeup gain.
 
 ## What happens inside
 
@@ -39,6 +40,7 @@ over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The met
 | 1. Leveler | RMS, 15 ms attack / 180 ms release, 10 dB soft knee, **20 ms lookahead**: evens out phrase-to-phrase level | ratio 1:1 → 3.5:1 |
 | 2. Snap compressor | Peak, **3 ms attack** lets consonant onsets through before clamping, 60 ms release: the "snap" | ratio 1:1 → 6:1 |
 | 3. Peak catcher | 20:1, 0.3 ms attack, a few dB above stage 2: trims the transients stage 2 let through | off → on |
+| Rider | Evens out line-to-line level like a fader ride. Compares the compressed level over the last ~200 ms of speech with the long-term average and glides toward the difference (80 ms). Holds still between lines, so gaps don't pump and room tone isn't lifted | off → full, within ±6 dB |
 | Presence | High shelf at 4 kHz | 0 → +3.5 dB |
 | De-esser | Split-band at 6 kHz, follows the voice (relative to the full band), not a fixed threshold | 0 → up to 10 dB |
 | Makeup | Predicted makeup for the knob position (instant) plus a slow trim measured the way a LUFS meter does | 0 → ~11 dB |
@@ -54,12 +56,15 @@ low-latency monitoring mode (Logic does this automatically).
 the loudness trim starts once it has heard about 10 s. The match is long-term (about the last two
 minutes of speech, like an integrated LUFS reading), so the plugin evens out level changes between
 lines and scenes instead of following them back up. The learned values are saved with your session,
-so a reopened project is matched from the first syllable.
+so a reopened project is matched from the first syllable. The rider learns the same way, over the
+first 3 s of speech.
 
 **About LRA:** on narration with gaps between lines (audio description, for example), most of the
 loudness range (LRA) comes from how much speech falls in each 3-second measurement window, not from
-the voice level. A compressor can't change that without filling the gaps, so expect about 1 LU less
-at 100% on that kind of take (9.0 → 8.2 LU on a raw AD take). Continuous reads drop further.
+the voice level. A compressor can't change that without filling the gaps. At 100%, the rider
+evens out the levels of individual lines and lifts short isolated cues slightly, so expect 1.5–2 LU
+less on that kind of take (9.0 → 7.4 LU on a raw 43-minute AD episode with the −6 ceiling; 3.0 → 1.3
+LU with the gaps cut out). Continuous reads drop further.
 
 **Tip:** EQ *before* ADCompressor. A high-pass at 70–100 Hz and a gentle cut wherever the
 voice sounds muddy (usually 200–400 Hz) keep low-end energy from driving the compressors. Leave the
