@@ -62,7 +62,9 @@ the loudness trim starts once it has heard about 10 s. The match is long-term (a
 minutes of speech, like an integrated LUFS reading), so the plugin evens out level changes between
 lines and scenes instead of following them back up. The learned values are saved with your session,
 so a reopened project is matched from the first syllable. The rider learns the same way, over the
-first 3 s of speech.
+first 3 s of speech, and keeps its learned level when you move the knob, so cranking it mid-take
+changes the density, not the level. (Sessions saved before 0.4 relearn the rider over the first
+3 s of speech.)
 
 **About LRA:** on narration with gaps between lines (audio description, for example), most of the
 loudness range (LRA) comes from how much speech falls in each 3-second measurement window, not from
@@ -143,6 +145,14 @@ The test tool can also render your own recordings, which is handy when tuning:
 ```
 
 This writes `take_AD0.wav`, `take_AD50.wav` and `take_AD100.wav` next to the file and prints their loudness, peak and level spread.
+
+For level checks on a take (5 minutes or longer for `--robust`):
+
+```bash
+./build/ADCompressorTest_artefacts/Release/ADCompressorTest --sweep take.wav     # loudness match and settled trim per knob position
+./build/ADCompressorTest_artefacts/Release/ADCompressorTest --jump take.wav 30 100 120   # knob jump at 120 s, level in 10 s windows
+./build/ADCompressorTest_artefacts/Release/ADCompressorTest --robust take.wav    # one-line summary, for batches of voices/mics
+```
 
 To refresh the README screenshot after changing the UI, build with
 `-DAD_COMPRESSOR_BUILD_SCREENSHOT_TOOL=ON` and run
