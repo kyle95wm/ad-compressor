@@ -37,6 +37,13 @@ over 20 ms to a time-aligned dry signal, so A/B switching is click-free. The met
 (**RIDE**, from the centre: right lifts, left cuts), gain reduction for **COMP** (all three compressor
 stages), **DE-ESS** and **LIMIT**, plus the current makeup gain.
 
+The **MATCH** row also shows how far the plugin has got learning your voice: *waiting for speech*,
+*learning level…* and *matching loudness…* (with a progress line), then a green **calibrated**,
+usually after about 20–25 s of speech. A reopened session shows calibrated straight away.
+**RELEARN** makes it forget the learned level and start over from the next few seconds of
+speech. Use it after swapping in a different take or recording level. It doesn't jump the level
+when you click it.
+
 ## What happens inside
 
 | Stage | Role | At 0% → 100% |
@@ -61,7 +68,9 @@ low-latency monitoring mode (Logic does this automatically).
 the loudness trim starts once it has heard about 10 s. The match is long-term (about the last two
 minutes of speech, like an integrated LUFS reading), so the plugin evens out level changes between
 lines and scenes instead of following them back up. The learned values are saved with your session,
-so a reopened project is matched from the first syllable. The rider learns the same way, over the
+so a reopened project is matched from the first syllable. If you swap in a take at a different
+level, click **RELEARN**: without it, the long memory takes a few minutes to follow the new level.
+The rider learns the same way, over the
 first 3 s of speech, and keeps its learned level when you move the knob, so cranking it mid-take
 changes the density, not the level. (Sessions saved before 0.4 relearn the rider over the first
 3 s of speech.)
@@ -156,7 +165,8 @@ For level checks on a take (5 minutes or longer for `--robust`):
 
 To refresh the README screenshot after changing the UI, build with
 `-DAD_COMPRESSOR_BUILD_SCREENSHOT_TOOL=ON` and run
-`./build/ADCompressorScreenshot_artefacts/Release/ADCompressorScreenshot docs/screenshot.png`.
+`./build/ADCompressorScreenshot_artefacts/Release/ADCompressorScreenshot docs/screenshot.png 40`
+(the 40 plays 40 s of test signal first, so the meters and the calibration status are running).
 
 ## Releasing
 

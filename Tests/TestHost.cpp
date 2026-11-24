@@ -2,7 +2,8 @@
 // Drives the plugin's processor directly (no plugin host needed) with
 // synthetic voice-like material and checks: loudness match (BS.1770-style
 // gated), the -1 dBFS output ceiling, dynamic spread reduction, loudness
-// range (LRA) reduction, bit-exact latency-compensated bypass, and
+// range (LRA) reduction, bit-exact latency-compensated bypass, knob jumps,
+// the calibration status and Relearn, and
 // saved-calibration restore.
 //
 // Usage:
@@ -11,6 +12,7 @@
 //   ADCompressorTest --render-to in.wav out.wav [amount] [ceiling] [ride]   one offline bounce (e.g. 100 -6 off)
 //   ADCompressorTest --calibrate take.wav  print steady-state makeup per knob position
 //   ADCompressorTest --trace [sampleRate]  print the learned reference/trim over time
+//   ADCompressorTest --sweep / --jump / --robust take.wav   level checks (see README)
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -590,6 +592,117 @@ int main (int argc, char* argv[])
             const double excess = render (true) - render (false);
             std::cout << "  knob jump 20->100%: next 30 s " << juce::String (excess, 2) << " dB vs steady 100%\n";
             check (std::abs (excess) < 1.0, "cranking the knob doesn't jump the level (within 1 dB of steady)");
+        }
+
+        // Calibration status and Relearn. Take A (-27 dB, like typical VO) for
+        // 60 s, then a different take B, 10 dB hotter (a swapped file), for 40 s.
+        {
+            using VC = ad::VoiceChain;
+            const auto takeA = makeVoice (cfg.sr, 60.0, cfg.nCh, -27.0f, 501);
+            const auto takeB = makeVoice (cfg.sr, 40.0, cfg.nCh, -17.0f, 502);
+            struct Trace { std::vector<int> stage; std::vector<float> inLufs; juce::AudioBuffer<float> out; };
+            // Runs A then B through one chain; relearnAtSwap clicks Relearn when B starts.
+            // Per-block stage and learned input level are recorded for B.
+            auto play = [&] (bool playA, bool relearnAtSwap, std::vector<int>* stagesA = nullptr,
+                             const juce::AudioBuffer<float>* second = nullptr)
+            {
+                const auto& next = second != nullptr ? *second : takeB;
+                VC chain; chain.prepare (cfg.sr, cfg.block, cfg.nCh);
+                auto feed = [&] (const juce::AudioBuffer<float>& src, Trace* t, std::vector<int>* st)
+                {
+                    juce::AudioBuffer<float> buf (src);
+                    for (int s = 0; s < buf.getNumSamples(); s += cfg.block)
+                    {
+                        juce::AudioBuffer<float> view (buf.getArrayOfWritePointers(), cfg.nCh, s,
+                                                       std::min (cfg.block, buf.getNumSamples() - s));
+                        chain.process (view, 0.5f, false);
+                        const int stage = chain.meters.calStage.load();
+                        if (st) st->push_back (stage);
+                        if (t) { t->stage.push_back (stage); t->inLufs.push_back (chain.getCalibration().inputLufs); }
+                    }
+                    if (t) t->out = buf;
+                };
+                if (playA) feed (takeA, nullptr, stagesA);
+                if (relearnAtSwap) chain.requestRelearn();
+                Trace t; feed (next, &t, nullptr);
+                return t;
+            };
+            auto blockAt = [&] (double sec) { return (size_t) (sec * cfg.sr / cfg.block); };
+
+            // 1. Stages go waiting -> level -> matching -> calibrated, never backwards.
+            std::vector<int> stagesA;
+            play (true, false, &stagesA);
+            bool monotonic = true; double tLevel = -1, tMatch = -1, tCal = -1;
+            for (size_t b = 0; b < stagesA.size(); ++b)
+            {
+                if (b > 0 && stagesA[b] < stagesA[b - 1]) monotonic = false;
+                const double t = (double) b * cfg.block / cfg.sr;
+                if (tLevel < 0 && stagesA[b] >= VC::learningLevel) tLevel = t;
+                if (tMatch < 0 && stagesA[b] >= VC::matchingLoudness) tMatch = t;
+                if (tCal < 0 && stagesA[b] == VC::calibrated) tCal = t;
+            }
+            std::cout << "  calibration: level at " << juce::String (tLevel, 1) << " s, matching at "
+                      << juce::String (tMatch, 1) << " s, calibrated at " << juce::String (tCal, 1) << " s\n";
+            check (monotonic && tLevel >= 0 && tLevel < tMatch && tMatch < tCal,
+                   "calibration stages advance in order and never go back");
+            check (tCal > 0 && tCal < 45.0, "calibrated within 45 s of a fresh take");
+
+            // 2. Relearn after a swap: the learned level follows the new take as
+            // fast as a fresh instance would; without it, it lags by several dB.
+            const auto withRelearn = play (true, true), without = play (true, false), fresh = play (false, false);
+            const size_t b6 = blockAt (6.0);
+            const float errRelearn = withRelearn.inLufs[b6] - fresh.inLufs[b6];
+            const float errWithout = without.inLufs[b6] - fresh.inLufs[b6];
+            std::cout << "  swap to a 10 dB hotter take, 6 s in: learned level off by "
+                      << juce::String (errRelearn, 2) << " dB with Relearn, " << juce::String (errWithout, 2)
+                      << " dB without\n";
+            check (std::abs (errRelearn) < 1.0f, "Relearn: new take's level learned within 1 dB after 6 s");
+            check (std::abs (errWithout) > 3.0f, "(without Relearn the old level lingers, so the button is needed)");
+            check (withRelearn.stage[blockAt (0.5)] < VC::calibrated, "Relearn resets the status");
+            check (withRelearn.stage.back() == VC::calibrated, "recalibrated by the end of the new take");
+
+            // 3. No jump when Relearn is clicked mid-take (same recording carries
+            // on): the next seconds sound like the same seconds without it.
+            auto firstSecond = [&] (const juce::AudioBuffer<float>& b)
+            {
+                juce::AudioBuffer<float> w (cfg.nCh, (int) cfg.sr);
+                for (int ch = 0; ch < cfg.nCh; ++ch) w.copyFrom (ch, 0, b, ch, 0, w.getNumSamples());
+                return measure (w, cfg.sr, 0).integrated;
+            };
+            const auto sameTake = makeVoice (cfg.sr, 10.0, cfg.nCh, -27.0f, 503);
+            const auto midRelearn = play (true, true, nullptr, &sameTake), midNone = play (true, false, nullptr, &sameTake);
+            const double jump = firstSecond (midRelearn.out) - firstSecond (midNone.out);
+            std::cout << "  Relearn mid-take, next second: " << juce::String (jump, 2) << " dB vs no Relearn\n";
+            check (std::abs (jump) < 0.5, "Relearn doesn't jump the level");
+        }
+
+        // Saved state: "calibrated" survives a reopen, and Relearn clears the
+        // saved calibration (including values that came from a restored state).
+        {
+            auto first = load (cfg.sr, cfg.block, cfg.nCh);
+            run (*first, input, cfg.block);
+            juce::MemoryBlock state;
+            first->getStateInformation (state);
+
+            auto second = load (cfg.sr, cfg.block, cfg.nCh);
+            second->setStateInformation (state.getData(), (int) state.getSize());
+            second->prepareToPlay (cfg.sr, cfg.block);
+            juce::AudioBuffer<float> silence (cfg.nCh, cfg.block * 4);
+            silence.clear();
+            run (*second, silence, cfg.block);
+            auto* proc = dynamic_cast<ADCompressorProcessor*> (second.get());
+            check (proc->getMeters().calStage.load() == ad::VoiceChain::calibrated,
+                   "reopened session shows calibrated straight away");
+
+            proc->relearn();
+            run (*second, silence, cfg.block);
+            juce::MemoryBlock after;
+            second->getStateInformation (after);
+            const auto xml = juce::AudioProcessor::getXmlFromBinary (after.getData(), (int) after.getSize());
+            check (xml != nullptr && ! xml->hasAttribute ("calInputLufs") && ! xml->hasAttribute ("calMatched"),
+                   "after Relearn, the saved session holds no old calibration");
+            check (proc->getMeters().calStage.load() == ad::VoiceChain::learningLevel,
+                   "after Relearn the status goes back to learning the level");
         }
     }
 

@@ -39,6 +39,8 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     UpdateChecker updateChecker;
     const ad::VoiceChain::Meters& getMeters() const noexcept { return chain.meters; }
+    // Forget the learned voice level and recalibrate (after swapping in a different take).
+    void relearn() noexcept { chain.requestRelearn(); }
 
     static constexpr const char* amountId = "amount";
     static constexpr const char* bypassId = "bypass";
